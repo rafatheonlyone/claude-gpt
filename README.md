@@ -13,12 +13,13 @@ around one rule:
 
 ## Status
 
-Early foundation. The first vertical slice works end to end:
+The first vertical slice, a Brazilian-Portuguese-by-default localization layer,
+and a full multi-page desktop shell all work end to end:
 
-**first launch → onboarding → quest generation → accept → complete → XP → level →
-achievement → persistence → restart → state restored**
+**first launch → onboarding → quest generation → cinematic encounter → accept →
+complete → XP → level → achievement → persistence → restart → state restored**
 
-90 tests passing. See [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for an
+140 tests passing. See [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for an
 honest account of what works, what is partial, and what is specified but not yet
 built.
 

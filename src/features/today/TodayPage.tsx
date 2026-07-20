@@ -100,6 +100,12 @@ export function TodayPage(): React.ReactElement {
         </div>
       )}
 
+      {actions.error && (
+        <p className="today__error" role="alert">
+          {t('quest.actionError')}
+        </p>
+      )}
+
       {total === 0 ? (
         <div className="empty-state">
           <p className="empty-state__title">{t('today.empty')}</p>

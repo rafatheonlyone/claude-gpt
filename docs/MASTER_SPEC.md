@@ -165,10 +165,12 @@ activate from the user's **actual life**, never from age alone.
 
 ## 15. Language
 
-English throughout — interface, generated content, documentation and code
-identifiers. All user-facing copy sits behind a typed i18n catalogue from the
-first commit (ADR-0006) so Brazilian Portuguese can be added without touching the
-UI.
+Brazilian Portuguese is the default interface and generated-content language;
+English remains fully selectable from Settings and persists as a preference
+(ADR-0007). Documentation and code identifiers stay in English. All user-facing
+copy sits behind a typed i18n catalogue from the first commit (ADR-0006), and
+the two catalogues are required to carry identical key shapes — checked by a
+test, not left to convention.
 
 ## 16. Definition of done
 

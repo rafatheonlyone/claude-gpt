@@ -32,6 +32,7 @@ interface SystemContextValue {
 
 const SystemContext = createContext<SystemContextValue | null>(null);
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook belongs with the provider it reads
 export function useSystem(): SystemContextValue {
   const value = useContext(SystemContext);
   if (!value) throw new Error('useSystem must be used within SystemProvider');

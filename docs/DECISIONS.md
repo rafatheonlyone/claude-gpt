@@ -140,7 +140,7 @@ consistency, recomputed from the event log.
 
 ## ADR-0006 — English-only strings behind an i18n layer from day one
 
-**Status:** Accepted — 2026-07-19
+**Status:** Superseded by ADR-0007 — 2026-07-19
 **Context:** The product ships in English. The primary user is Brazilian and will likely want
 Portuguese eventually. Retrofitting i18n across a large UI is expensive and error-prone.
 
@@ -149,3 +149,50 @@ through a `t()` function. Only `en` exists initially. Generated content (quests,
 carries an explicit locale field so it is never mistaken for a translatable static string.
 
 **Consequences:** Small ongoing discipline cost; avoids a large and risky refactor later.
+
+## ADR-0007 — Brazilian Portuguese as the default locale
+
+**Status:** Accepted — 2026-07-20
+**Context:** The primary and initial user is Brazilian. Shipping with English as the default asked
+them to read their own lifelong record in a second language from the very first launch, which
+contradicted the product's intent to feel personal rather than imported. ADR-0006 already put every
+string behind `t()`, so the catalogue mechanism was ready; only the default and the second catalogue
+were missing.
+
+**Decision:** `pt-BR` is the default `Locale` (`src/i18n/index.ts`) and the default `ContentLocale`
+for generated content such as quest templates and achievements (`src/core/content-locale.ts`).
+English remains fully supported and selectable from Settings at any time; the choice persists as an
+app preference. The two UI catalogues (`en.ts`, `pt-BR.ts`) are required to carry identical key
+shapes, enforced by a test (`src/i18n/index.test.ts`) rather than by convention alone. Quest and
+achievement content carries parallel English and Portuguese fields (`title`/`titlePt`, and so on)
+resolved through `localizeTemplate`/`localizeAchievement`, kept independent of the UI catalogue
+per ADR-0003 so the portable core never imports from `src/i18n`.
+
+**Consequences:** Every future UI or content string must be authored in both languages before it can
+land — the parity test fails the build otherwise. This is accepted as a small, permanent discipline
+cost in exchange for the product reading naturally in the primary user's own language from day one.
+
+## ADR-0008 — Quest lifecycle gains `detected` and `postponed` states
+
+**Status:** Accepted — 2026-07-20
+**Context:** The cinematic quest encounter (docs/GAME_SYSTEMS.md §9) needs to distinguish a quest the
+rules engine has generated from one the user has actually been shown, so that restarting the app
+never re-presents something already seen and decided on implicitly. The original schema
+(migration 001) only distinguished `offered` onward — there was no way to record "generated but not
+yet surfaced" independently of session state, so duplicate-presentation prevention would have had to
+live in the React layer and would not have survived a restart. Postponing a quest also had no
+distinct state from rejecting one, which quietly discarded the user's intent to decide later.
+
+**Decision:** Migration 002 widens `quests.status` to include `detected` (generated, never yet shown
+— the cinematic queue's source) and `postponed` (explicitly deferred, retained rather than deleted).
+Presenting a quest is a persisted transition (`detected` → `offered`, stamping `presented_at`) rather
+than a client-side flag, so the guarantee holds across restarts. SQLite cannot widen a `CHECK`
+constraint in place, so the migration rebuilds the table via the documented twelve-step procedure
+inside the migrator's existing transaction. Two free-text columns, `reflection_note` and
+`evidence_note`, are added for optional completion-time notes — deliberately not the full structured
+evidence system in `docs/DATA_MODEL.md`, which remains scoped to the mastery milestone (D-1/D-2).
+
+**Consequences:** The quest state machine now has eight states instead of six; every consumer of
+`quests.status` (repositories, dashboard queries, the Architect snapshot) must account for `detected`
+being excluded from user-facing lists until presented. Migration tests cover the rebuild against a
+populated migration-001 database to confirm no row is lost or reordered.

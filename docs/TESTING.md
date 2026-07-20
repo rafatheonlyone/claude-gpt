@@ -20,15 +20,18 @@ npm run verify         # typecheck + lint + test + build — the pre-commit gate
 
 ## Current coverage
 
-90 tests across 5 files.
+140 tests across 8 files.
 
-| Suite                          | Tests | Covers                                                                                                                                      |
-| ------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `progression/levels.test.ts`   | 15    | Curve calibration points, monotonicity, exact inverse at boundaries, no negative level loss on correction                                   |
-| `progression/xp.test.ts`       | 19    | Difficulty scaling, evidence multipliers, partial-completion floor, diminishing returns, **order-independence**, anti-fragmentation         |
-| `quests/generator.test.ts`     | 24    | Determinism, schedule as a hard constraint, injury exclusion, recovery clamping, neglect recovery, rationale presence, template safety scan |
-| `persistence/migrator.test.ts` | 12    | Apply, idempotency, FK enforcement, checksum tamper detection, newer-schema refusal, transactional rollback                                 |
-| `tests/vertical-slice.test.ts` | 20    | Full flow end to end, including **restart and state restoration**                                                                           |
+| Suite                             | Tests | Covers                                                                                                                                      |
+| ---------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `progression/levels.test.ts`       | 15    | Curve calibration points, monotonicity, exact inverse at boundaries, no negative level loss on correction                                   |
+| `progression/xp.test.ts`           | 19    | Difficulty scaling, evidence multipliers, partial-completion floor, diminishing returns, **order-independence**, anti-fragmentation         |
+| `quests/generator.test.ts`         | 24    | Determinism, schedule as a hard constraint, injury exclusion, recovery clamping, neglect recovery, rationale presence, template safety scan |
+| `quests/templates.test.ts`         | 4     | English/Portuguese field parity across every template, non-empty localized content                                                          |
+| `persistence/migrator.test.ts`     | 17    | Apply, idempotency, FK enforcement, checksum tamper detection, newer-schema refusal, transactional rollback, migration 001→002 data preservation |
+| `achievements/definitions.test.ts` | 4     | Definition/localization shape, presentation ordering                                                                                         |
+| `i18n/index.test.ts`               | 16    | Default locale is pt-BR, switching, **catalogue key-shape parity between `en` and `pt-BR`**, missing-key fallback, number/date formatting    |
+| `tests/vertical-slice.test.ts`     | 41    | Full flow end to end, including **restart and state restoration**, quest lifecycle (`detected`→`offered`→accepted/completed/postponed)      |
 
 ## Notable test designs
 
@@ -48,6 +51,10 @@ Some of these encode product values, not just behaviour:
   actually happens when the user closes and reopens SYSTEM.
 - **Newer-schema refusal.** Asserts the app refuses to start against a database
   written by a newer build, rather than risking damage to that data.
+- **i18n catalogue parity.** `en` and `pt-BR` must resolve to exactly the same set
+  of dotted keys. A translator adding a Portuguese-only key or missing an English
+  one fails the build immediately rather than surfacing as a raw key on screen
+  after a locale switch.
 
 ## Real SQLite, never mocks
 
@@ -84,6 +91,21 @@ host RSS:        38.5 MB
 This confirms migrations, pragmas, the achievement registry sync and user
 creation all work through Tauri IPC and `rusqlite`, not only through the test
 adapter.
+
+**2026-07-20 re-check:** `npm run tauri:dev` was launched again after the
+Portuguese-localization and multi-page-shell milestone and the window was
+screenshotted directly (`PrintWindow`, not a browser). It rendered a real
+dashboard against the existing database — Portuguese sidebar and copy
+throughout, a live quest ("Circuito de Manejo de Bola", domain `physical`,
+difficulty `Moderada`), and the cinematic encounter overlay ("NOVA MISSÃO
+DETECTADA" / "Deseja aceitar esta missão?") with a live "15 more waiting"
+queue counter — confirming the shell, the localization default, and the
+encounter queue all work against production `rusqlite`, not only the test
+adapter. Full interactive click-through (accept/complete/restart via real
+mouse input) was not performed in this pass because the window could not be
+reliably brought to the OS foreground in this environment without risking
+sending input to an unrelated window; the underlying interaction logic is
+covered instead by the 41-test vertical slice.
 
 ## Determinism
 

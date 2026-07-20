@@ -44,8 +44,8 @@ export function QuestCompletionDialog({ quest, onClose, onCompleted }: Props): R
     try {
       const result = await service.completeQuest(quest.id, {
         completion: degree === 'full' ? 1 : 0.5,
-        reflection: reflection.trim() || undefined,
-        evidenceNote: evidenceNote.trim() || undefined,
+        ...(reflection.trim() ? { reflection: reflection.trim() } : {}),
+        ...(evidenceNote.trim() ? { evidenceNote: evidenceNote.trim() } : {}),
       });
 
       audio.play('questCompleted');

@@ -43,6 +43,15 @@ dropped.
 First launch → onboarding → profile → dashboard → quest → accept → complete →
 XP → level → achievement → persistence → restart → restore. All 16 steps verified.
 
+## Phase C.5 — Localization and multi-page shell ✅
+
+Brazilian Portuguese as the default locale with English fully selectable
+(ADR-0007); the single-screen dashboard replaced with a routed multi-page
+shell (Central de Comando, Hoje, Missões, Status, Conquistas, Arquiteto,
+Configurações); the cinematic quest encounter with a persisted `detected` →
+`offered` lifecycle so restarts never re-present a quest (ADR-0008); every
+Settings control genuinely wired and persisted. See `CHANGELOG.md` 2026-07-20.
+
 ## Phase D — Expansion ⬜
 
 Ordered by dependency and value. D-1 is the current recommended task.
@@ -79,6 +88,8 @@ Ordered by dependency and value. D-1 is the current recommended task.
 | Accessibility audit with a real screen reader                  | ⬜                       |
 | Onboarding persistence across restarts                         | ⬜                       |
 | Colour-blind simulation validation of the palette              | ⬜                       |
+| Reconcile encounter queue with DESIGN_SYSTEM §10's one-cinematic-per-session budget | ⬜ queue currently presents every `detected` quest in sequence (compact for routine ones); needs either a session cap or a documented exception for the initial post-onboarding batch |
+| End-to-end interactive desktop click-through (real input, not just service-layer tests) | ⬜ not yet automated in this environment |
 
 ## Explicitly deferred
 

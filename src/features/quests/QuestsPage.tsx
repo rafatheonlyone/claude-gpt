@@ -42,10 +42,11 @@ export function QuestsPage(): React.ReactElement {
   const [version, setVersion] = useState(0);
 
   const refresh = useCallback(async () => {
-    const filter: QuestListFilter = {};
-    if (domainFilter) filter.domain = domainFilter;
-    if (statusFilter) filter.status = [statusFilter];
-    if (search.trim()) filter.search = search.trim();
+    const filter: QuestListFilter = {
+      ...(domainFilter ? { domain: domainFilter } : {}),
+      ...(statusFilter ? { status: [statusFilter] } : {}),
+      ...(search.trim() ? { search: search.trim() } : {}),
+    };
     setQuests(await service.getAllQuests(filter));
     setVersion((v) => v + 1);
   }, [service, domainFilter, statusFilter, search]);
@@ -120,6 +121,12 @@ export function QuestsPage(): React.ReactElement {
             </select>
           </div>
         </div>
+
+        {actions.error && (
+          <p className="quests-page__error" role="alert">
+            {t('quest.actionError')}
+          </p>
+        )}
 
         {sorted.length === 0 ? (
           <div className="empty-state">

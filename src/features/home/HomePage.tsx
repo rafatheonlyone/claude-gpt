@@ -77,6 +77,12 @@ export function HomePage(): React.ReactElement {
         </h1>
       </header>
 
+      {actions.error && (
+        <p className="home__action-error" role="alert">
+          {t('quest.actionError')}
+        </p>
+      )}
+
       {/* 1. Current priority */}
       <section className="home__section">
         <h2 className="home__section-title">{t('home.priorityTitle')}</h2>

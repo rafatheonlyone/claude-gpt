@@ -43,6 +43,7 @@ export const en = {
       body: 'What should SYSTEM call you?',
       nameLabel: 'Display name',
       namePlaceholder: 'Your name',
+      defaultName: 'Operator',
       birthLabel: 'Date of birth',
       birthHelp:
         'Used only to keep recommendations appropriate for your age. Stored locally, never shared.',
@@ -52,6 +53,26 @@ export const en = {
       title: 'Current priorities',
       body: 'Select what you are actually working on right now. These shape what SYSTEM proposes.',
       help: 'Choose as many as apply. You can change these at any time.',
+      tags: {
+        mathematics: 'Mathematics',
+        english: 'English',
+        school: 'School',
+        competition: 'Competitions',
+        programming: 'Programming',
+        frontend: 'Front-end',
+        security: 'Cybersecurity',
+        basketball: 'Basketball',
+        boxing: 'Boxing',
+        calisthenics: 'Calisthenics',
+        strength: 'Strength',
+        chess: 'Chess',
+        reading: 'Reading',
+        focus: 'Focus',
+        creativity: 'Creating',
+        communication: 'Communication',
+        finance: 'Financial literacy',
+        recovery: 'Recovery',
+      },
     },
 
     capacity: {
@@ -203,6 +224,7 @@ export const en = {
     purpose: 'Purpose',
     steps: 'Steps',
     awarded: '+{xp} XP',
+    actionError: 'That could not be saved. Nothing changed — try again.',
     difficulty: {
       trivial: 'Trivial',
       light: 'Light',

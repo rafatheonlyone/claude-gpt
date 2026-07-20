@@ -25,25 +25,25 @@ const STEPS: readonly StepId[] = [
 ];
 
 /** Goal tags offered at onboarding, matched against quest template tags. */
-const FOCUS_OPTIONS: ReadonlyArray<{ tag: string; label: string; domain: Domain }> = [
-  { tag: 'mathematics', label: 'Mathematics', domain: 'academic' },
-  { tag: 'english', label: 'English', domain: 'academic' },
-  { tag: 'school', label: 'School', domain: 'academic' },
-  { tag: 'competition', label: 'Competitions', domain: 'academic' },
-  { tag: 'programming', label: 'Programming', domain: 'technical' },
-  { tag: 'frontend', label: 'Front-end', domain: 'technical' },
-  { tag: 'security', label: 'Cybersecurity', domain: 'technical' },
-  { tag: 'basketball', label: 'Basketball', domain: 'physical' },
-  { tag: 'boxing', label: 'Boxing', domain: 'physical' },
-  { tag: 'calisthenics', label: 'Calisthenics', domain: 'physical' },
-  { tag: 'strength', label: 'Strength', domain: 'physical' },
-  { tag: 'chess', label: 'Chess', domain: 'mental' },
-  { tag: 'reading', label: 'Reading', domain: 'mental' },
-  { tag: 'focus', label: 'Focus', domain: 'mental' },
-  { tag: 'creativity', label: 'Creating', domain: 'creative' },
-  { tag: 'communication', label: 'Communication', domain: 'social' },
-  { tag: 'finance', label: 'Financial literacy', domain: 'financial' },
-  { tag: 'recovery', label: 'Recovery', domain: 'recovery' },
+const FOCUS_OPTIONS: ReadonlyArray<{ tag: string; domain: Domain }> = [
+  { tag: 'mathematics', domain: 'academic' },
+  { tag: 'english', domain: 'academic' },
+  { tag: 'school', domain: 'academic' },
+  { tag: 'competition', domain: 'academic' },
+  { tag: 'programming', domain: 'technical' },
+  { tag: 'frontend', domain: 'technical' },
+  { tag: 'security', domain: 'technical' },
+  { tag: 'basketball', domain: 'physical' },
+  { tag: 'boxing', domain: 'physical' },
+  { tag: 'calisthenics', domain: 'physical' },
+  { tag: 'strength', domain: 'physical' },
+  { tag: 'chess', domain: 'mental' },
+  { tag: 'reading', domain: 'mental' },
+  { tag: 'focus', domain: 'mental' },
+  { tag: 'creativity', domain: 'creative' },
+  { tag: 'communication', domain: 'social' },
+  { tag: 'finance', domain: 'financial' },
+  { tag: 'recovery', domain: 'recovery' },
 ];
 
 const CAPACITY_OPTIONS = [30, 60, 90, 120, 180, 240] as const;
@@ -92,7 +92,7 @@ export function Onboarding({ service, onComplete }: Props): React.ReactElement {
     setError(null);
 
     const input: OnboardingInput = {
-      displayName: displayName.trim() || 'Operator',
+      displayName: displayName.trim() || t('onboarding.identity.defaultName'),
       birthDate: birthDate || null,
       country: null,
       goals,
@@ -226,7 +226,7 @@ export function Onboarding({ service, onComplete }: Props): React.ReactElement {
                           style={{ background: `var(--domain-${option.domain})` }}
                           aria-hidden="true"
                         />
-                        {option.label}
+                        {t(`onboarding.focus.tags.${option.tag}`)}
                       </button>
                     );
                   })}

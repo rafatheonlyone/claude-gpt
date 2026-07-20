@@ -165,8 +165,8 @@ function dismissBootLayer(): void {
  */
 async function applyStoredPreferences(service: SystemService, onboarded: boolean): Promise<Locale> {
   const [profile, appPrefs, storedLocale] = await Promise.all([
-    onboarded ? service.getPreferences() : Promise.resolve({}),
-    onboarded ? service.getAppPreferences() : Promise.resolve({}),
+    onboarded ? service.getPreferences() : Promise.resolve<Record<string, unknown>>({}),
+    onboarded ? service.getAppPreferences() : Promise.resolve<Record<string, unknown>>({}),
     service.getLocalePreference(),
   ]);
 

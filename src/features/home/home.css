@@ -31,6 +31,16 @@
   margin-bottom: var(--space-32);
 }
 
+.home__action-error {
+  margin-bottom: var(--space-24);
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(232, 104, 93, 0.4);
+  background: rgba(232, 104, 93, 0.1);
+  color: var(--state-critical);
+  font-size: var(--type-detail);
+}
+
 .home__eyebrow {
   font-size: var(--type-micro);
   letter-spacing: 0.32em;

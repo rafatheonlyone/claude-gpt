@@ -24,6 +24,15 @@
   gap: var(--space-8);
 }
 
+.quests-page__error {
+  padding: var(--space-12) var(--space-16);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(232, 104, 93, 0.4);
+  background: rgba(232, 104, 93, 0.1);
+  color: var(--state-critical);
+  font-size: var(--type-detail);
+}
+
 .quests-page__search {
   height: 38px;
   padding: 0 var(--space-12);

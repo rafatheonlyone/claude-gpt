@@ -5,6 +5,99 @@ the definition in `CLAUDE.md` — not when a placeholder exists.
 
 ---
 
+## 2026-07-20 — Brazilian Portuguese localization and multi-page desktop shell
+
+A prior session's work was recovered from an interrupted checkpoint (`WIP:
+Portuguese UI and multi-page shell`), finished, validated, and documented.
+`npm run verify` now passes cleanly and the real Tauri desktop app was launched
+and screenshotted directly to confirm the rendered result.
+
+### Localization (ADR-0007)
+
+- `pt-BR` is now the default UI locale and the default content locale for
+  generated quests and achievements; English remains fully selectable from
+  Settings and persists as a preference.
+- Second full message catalogue (`src/i18n/pt-BR.ts`) added alongside a
+  restructured `en.ts`; a test enforces identical key shapes between the two so
+  a missing translation fails the build rather than surfacing as a raw key.
+- Quest templates and achievement definitions carry parallel English/Portuguese
+  fields, resolved through `localizeTemplate` / `localizeAchievement`, kept
+  independent of the UI catalogue so the portable core stays framework- and
+  presentation-free.
+- Closed a gap the recovery pass found: `Onboarding.tsx`'s focus-tag labels and
+  its default-display-name fallback were still hard-coded English literals,
+  left over from before the i18n catalogue existed. Both now resolve through
+  `t()` with matching `en`/`pt-BR` entries.
+
+### Multi-page desktop shell
+
+- Replaced the single-screen dashboard with a real shell: sidebar navigation,
+  top bar with live level/XP/rank and a pending-encounter badge, and seven
+  routed pages (Central de Comando, Hoje, Missões, Status, Conquistas,
+  Arquiteto, Configurações) plus honest "coming soon" stubs for Habilidades,
+  Chefes and Linha do Tempo that state plainly what is deferred rather than
+  faking content.
+- Sidebar collapse state persists as an app preference; all navigation is
+  keyboard-reachable with visible focus states.
+
+### Cinematic quest encounter and lifecycle (ADR-0008)
+
+- Migration 002 widens `quests.status` with `detected` (generated, not yet
+  shown) and `postponed` (deferred, retained). Presenting a quest is a
+  persisted transition, not client state, so a restart can never cause a quest
+  to be cinematically re-presented as new.
+- New encounter overlay ("NOVA MISSÃO DETECTADA" / "Deseja aceitar esta
+  missão?") with full and compact variants by quest significance, a live
+  queue counter, `Esc`-to-dismiss, full keyboard focus trapping, and reduced
+  motion / muted-sound handling driven by the same settings as the rest of the
+  app.
+- Quest completion dialog captures an optional reflection and evidence note
+  (`reflection_note`, `evidence_note` — free text, deliberately not the full
+  structured evidence system reserved for the mastery milestone) and shows the
+  real credited XP from the same transactional path `system-service.ts`
+  already used.
+
+### Settings
+
+- Every visible control (language, sound on/off, four independent volume
+  sliders, animation intensity, performance mode, quest-presentation
+  frequency) persists through `setAppPreference` / `setProfilePreference` /
+  `setLocalePreference` and was traced to confirm none are cosmetic-only.
+
+### Recovery and validation
+
+The WIP checkpoint had seven small integration breaks left from the session
+that was interrupted by a usage limit: four implicit-`any` errors from an
+under-typed `Promise.all` fallback in `App.tsx`, an `exactOptionalPropertyTypes`
+violation in `QuestCompletionDialog`, two `readonly`-property mutations in
+`QuestsPage`, and one `react-refresh` lint warning tripping `--max-warnings 0`.
+All were genuine typos/omissions rather than design problems and are now
+fixed. Also found and fixed: `useQuestActions`'s `error` state was tracked but
+never rendered anywhere, so a failed accept/decline/postpone silently produced
+no user-visible feedback — every page using it now surfaces
+`quest.actionError`.
+
+`npm run typecheck`, `lint`, `test` (140 tests, 8 files), `build`, and
+`cargo build` all pass. The real desktop app was launched via `npm run
+tauri:dev` and its window captured directly (`PrintWindow`, not a browser),
+confirming the Portuguese default, live quest data, and the cinematic
+encounter all render correctly against production `rusqlite`.
+
+### Known incomplete, carried forward honestly
+
+Full interactive click-through of the desktop app (accept/complete/restart via
+real simulated mouse input) was not performed this session — the window could
+not be reliably brought to the OS foreground without risking sending input to
+an unrelated window on the live desktop. The 41-test vertical slice covers the
+same interaction logic at the service layer. `docs/DESIGN_SYSTEM.md` §10's
+"at most one cinematic interruption per session" is not literally enforced —
+the encounter queue will cinematically present every `detected` quest in
+sequence (compact variant for routine ones), which is most visible right after
+onboarding's initial batch generation. Tracked in `ROADMAP.md`. Mastery,
+attributes, ranks, classes, bosses, analytics, focus mode, AI providers,
+export/deletion and integrity detection remain specified but not implemented,
+as before.
+
 ## 2026-07-19 — Foundation and first vertical slice
 
 The project went from an empty repository to a launching desktop application

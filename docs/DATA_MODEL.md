@@ -60,6 +60,17 @@ when something happened, the audit shows when it was recorded.
 `generation_rationale` is stored, not regenerated, so "why was this quest created?" is answered from
 the actual decision inputs rather than a plausible reconstruction after the fact.
 
+As implemented (migration 002, ADR-0008), `quests.status` is
+`detected | offered | accepted | completed | skipped | expired | rejected | postponed`. `detected`
+means the rules engine generated the quest but the cinematic encounter has not yet shown it to the
+user — this is a persisted state, not client-side session state, so a restart can never cause a
+quest to be re-presented as new. `presented_at` is stamped exactly once, the first time the quest is
+shown, whichever path shows it (the encounter or opening its detail view directly). `postponed` is
+distinct from `rejected`: the quest is retained, not discarded, recording that the user meant to
+decide later. `reflection_note` and `evidence_note` are free-text columns captured at completion —
+a deliberately small subset of the full structured evidence system described above, scoped to the
+mastery milestone (D-1/D-2) where evidence becomes load-bearing rather than optional colour.
+
 ### Challenges and rewards
 
 | Table                | Purpose                                                                            |

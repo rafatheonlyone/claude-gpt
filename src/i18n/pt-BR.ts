@@ -42,6 +42,7 @@ export const ptBR: Messages = {
       body: 'Como o SYSTEM deve chamá-lo?',
       nameLabel: 'Nome de exibição',
       namePlaceholder: 'Seu nome',
+      defaultName: 'Operador',
       birthLabel: 'Data de nascimento',
       birthHelp:
         'Usada apenas para manter as recomendações adequadas à sua idade. Armazenada localmente, nunca compartilhada.',
@@ -51,6 +52,26 @@ export const ptBR: Messages = {
       title: 'Prioridades atuais',
       body: 'Selecione no que você realmente está trabalhando agora. Isso molda o que o SYSTEM propõe.',
       help: 'Escolha quantas fizerem sentido. Você pode alterá-las a qualquer momento.',
+      tags: {
+        mathematics: 'Matemática',
+        english: 'Inglês',
+        school: 'Escola',
+        competition: 'Competições',
+        programming: 'Programação',
+        frontend: 'Front-end',
+        security: 'Cibersegurança',
+        basketball: 'Basquete',
+        boxing: 'Boxe',
+        calisthenics: 'Calistenia',
+        strength: 'Força',
+        chess: 'Xadrez',
+        reading: 'Leitura',
+        focus: 'Foco',
+        creativity: 'Criação',
+        communication: 'Comunicação',
+        finance: 'Educação financeira',
+        recovery: 'Recuperação',
+      },
     },
 
     capacity: {
@@ -202,6 +223,7 @@ export const ptBR: Messages = {
     purpose: 'Propósito',
     steps: 'Etapas',
     awarded: '+{xp} XP',
+    actionError: 'Não foi possível salvar. Nada mudou — tente novamente.',
     difficulty: {
       trivial: 'Trivial',
       light: 'Leve',
