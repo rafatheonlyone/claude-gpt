@@ -14,9 +14,11 @@ export interface UserRecord {
   readonly id: string;
   readonly displayName: string;
   readonly birthDate: string | null;
+  readonly country: string | null;
   readonly timezone: string;
   readonly locale: string;
   readonly onboardingCompleted: boolean;
+  readonly createdAt: string;
 }
 
 export interface ProfileStateRecord {
@@ -40,6 +42,12 @@ export interface QuestRecord {
   readonly rationale: string | null;
   readonly awardedXp: number | null;
   readonly dueDate: string | null;
+  readonly createdAt: string;
+  readonly presentedAt: string | null;
+  readonly postponedAt: string | null;
+  readonly completedAt: string | null;
+  readonly reflectionNote: string | null;
+  readonly evidenceNote: string | null;
 }
 
 export interface QuestStepRecord {
@@ -50,6 +58,22 @@ export interface QuestStepRecord {
   readonly optional: boolean;
   readonly completed: boolean;
 }
+
+export interface QuestFeedbackRecord {
+  readonly action: string;
+  readonly reason: string | null;
+  readonly recordedAt: string;
+}
+
+export interface QuestListFilter {
+  readonly status?: readonly string[];
+  readonly domain?: Domain;
+  readonly search?: string;
+}
+
+const QUEST_COLUMNS = `id, title, description, purpose, domain, quest_type, difficulty,
+              estimated_minutes, status, generation_rationale, awarded_xp, due_date,
+              created_at, presented_at, postponed_at, completed_at, reflection_note, evidence_note`;
 
 const asString = (value: unknown): string => String(value ?? '');
 const asNumber = (value: unknown): number => Number(value ?? 0);
@@ -64,7 +88,7 @@ export class Repositories {
 
   async findUser(): Promise<UserRecord | null> {
     const rows = await this.db.query(
-      `SELECT u.id, p.display_name, p.birth_date, p.timezone, p.locale,
+      `SELECT u.id, u.created_at, p.display_name, p.birth_date, p.country, p.timezone, p.locale,
               COALESCE(o.completed, 0) AS completed
          FROM users u
          LEFT JOIN profiles p ON p.user_id = u.id
@@ -79,9 +103,11 @@ export class Repositories {
       id: asString(row['id']),
       displayName: asString(row['display_name']),
       birthDate: asNullableString(row['birth_date']),
+      country: asNullableString(row['country']),
       timezone: asString(row['timezone']) || 'UTC',
-      locale: asString(row['locale']) || 'en',
+      locale: asString(row['locale']) || 'pt-BR',
       onboardingCompleted: asBoolean(row['completed']),
+      createdAt: asString(row['created_at']),
     };
   }
 
@@ -178,6 +204,21 @@ export class Repositories {
     return out;
   }
 
+  /** Single-key read, for values that would be wasteful to fetch as a whole namespace. */
+  async getPreferenceValue(userId: string, namespace: string, key: string): Promise<unknown> {
+    const rows = await this.db.query(
+      'SELECT value FROM preferences WHERE user_id = ? AND namespace = ? AND key = ?',
+      [userId, namespace, key],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    try {
+      return JSON.parse(asString(row['value']));
+    } catch {
+      return undefined;
+    }
+  }
+
   // --------------------------------------------------------- profile state
 
   async getProfileState(userId: string): Promise<ProfileStateRecord> {
@@ -204,6 +245,21 @@ export class Repositories {
     return asNumber(rows[0]?.['raw_xp']);
   }
 
+  async getDomainStates(
+    userId: string,
+  ): Promise<Array<{ domain: Domain; totalXp: number; level: number; lastActive: string | null }>> {
+    const rows = await this.db.query(
+      'SELECT domain, total_xp, level, last_active FROM domain_state WHERE user_id = ? ORDER BY total_xp DESC',
+      [userId],
+    );
+    return rows.map((row) => ({
+      domain: asString(row['domain']) as Domain,
+      totalXp: asNumber(row['total_xp']),
+      level: Math.max(1, asNumber(row['level'])),
+      lastActive: asNullableString(row['last_active']),
+    }));
+  }
+
   async getDomainLastActive(userId: string): Promise<Partial<Record<Domain, string | null>>> {
     const rows = await this.db.query(
       'SELECT domain, last_active FROM domain_state WHERE user_id = ?',
@@ -220,23 +276,62 @@ export class Repositories {
 
   async getQuestsForDate(userId: string, date: string): Promise<QuestRecord[]> {
     const rows = await this.db.query(
-      `SELECT id, title, description, purpose, domain, quest_type, difficulty,
-              estimated_minutes, status, generation_rationale, awarded_xp, due_date
-         FROM quests
-        WHERE user_id = ? AND due_date = ?
-        ORDER BY created_at`,
+      `SELECT ${QUEST_COLUMNS} FROM quests WHERE user_id = ? AND due_date = ? ORDER BY created_at`,
       [userId, date],
     );
     return rows.map(toQuestRecord);
   }
 
-  async getQuest(questId: string): Promise<QuestRecord | null> {
+  /**
+   * The full quest list, excluding `detected` quests — those are pre-encounter
+   * and belong exclusively to the cinematic queue, never to a browsable list.
+   */
+  async getAllQuests(userId: string, filter: QuestListFilter = {}): Promise<QuestRecord[]> {
+    const clauses: string[] = ["user_id = ?", "status != 'detected'"];
+    const params: SqlParam[] = [userId];
+
+    if (filter.status && filter.status.length > 0) {
+      clauses.push(`status IN (${filter.status.map(() => '?').join(', ')})`);
+      params.push(...filter.status);
+    }
+    if (filter.domain) {
+      clauses.push('domain = ?');
+      params.push(filter.domain);
+    }
+    if (filter.search && filter.search.trim().length > 0) {
+      clauses.push('title LIKE ?');
+      params.push(`%${filter.search.trim()}%`);
+    }
+
     const rows = await this.db.query(
-      `SELECT id, title, description, purpose, domain, quest_type, difficulty,
-              estimated_minutes, status, generation_rationale, awarded_xp, due_date
-         FROM quests WHERE id = ?`,
-      [questId],
+      `SELECT ${QUEST_COLUMNS} FROM quests WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC`,
+      params,
     );
+    return rows.map(toQuestRecord);
+  }
+
+  async getPendingEncounters(userId: string): Promise<QuestRecord[]> {
+    const rows = await this.db.query(
+      `SELECT ${QUEST_COLUMNS} FROM quests WHERE user_id = ? AND status = 'detected' ORDER BY created_at`,
+      [userId],
+    );
+    return rows.map(toQuestRecord);
+  }
+
+  async getRecentGeneratedQuests(userId: string, limit = 10): Promise<QuestRecord[]> {
+    const rows = await this.db.query(
+      `SELECT ${QUEST_COLUMNS} FROM quests
+        WHERE user_id = ? AND source = 'rules'
+        ORDER BY created_at DESC LIMIT ?`,
+      [userId, limit],
+    );
+    return rows.map(toQuestRecord);
+  }
+
+  async getQuest(questId: string): Promise<QuestRecord | null> {
+    const rows = await this.db.query(`SELECT ${QUEST_COLUMNS} FROM quests WHERE id = ?`, [
+      questId,
+    ]);
     const row = rows[0];
     return row ? toQuestRecord(row) : null;
   }
@@ -256,18 +351,82 @@ export class Repositories {
     }));
   }
 
+  async getQuestFeedback(questId: string): Promise<QuestFeedbackRecord[]> {
+    const rows = await this.db.query(
+      'SELECT action, reason, recorded_at FROM quest_feedback WHERE quest_id = ? ORDER BY recorded_at',
+      [questId],
+    );
+    return rows.map((row) => ({
+      action: asString(row['action']),
+      reason: asNullableString(row['reason']),
+      recordedAt: asString(row['recorded_at']),
+    }));
+  }
+
+  /**
+   * Any transition away from `detected` means the user saw and decided on the
+   * quest, so `presented_at` is stamped if it was not already — regardless of
+   * whether the caller went through the cinematic encounter's `presentQuest`
+   * first. This keeps quest history honest without forcing every caller to
+   * remember a two-step dance.
+   */
   async setQuestStatus(questId: string, status: string, now: string): Promise<void> {
-    await this.db.execute('UPDATE quests SET status = ?, updated_at = ? WHERE id = ?', [
-      status,
-      now,
-      questId,
+    await this.db.execute(
+      'UPDATE quests SET status = ?, presented_at = COALESCE(presented_at, ?), updated_at = ? WHERE id = ?',
+      [status, now, now, questId],
+    );
+  }
+
+  /**
+   * Detected -> offered, stamping `presented_at`.
+   *
+   * The `AND status = 'detected'` guard makes this idempotent: presenting an
+   * already-presented quest a second time (a stale queue re-render, a double
+   * click) is a silent no-op rather than a corrupted state transition.
+   */
+  async presentQuest(questId: string, now: string): Promise<void> {
+    await this.db.execute(
+      "UPDATE quests SET status = 'offered', presented_at = ?, updated_at = ? WHERE id = ? AND status = 'detected'",
+      [now, now, questId],
+    );
+  }
+
+  async postponeQuest(userId: string, questId: string, reason: string | null, now: string): Promise<void> {
+    await this.db.transaction([
+      {
+        sql: "UPDATE quests SET status = 'postponed', postponed_at = ?, updated_at = ? WHERE id = ?",
+        params: [now, now, questId],
+      },
+      {
+        sql: `INSERT INTO quest_feedback (id, user_id, quest_id, action, reason, recorded_at)
+              VALUES (?, ?, ?, 'postponed', ?, ?)`,
+        params: [`${questId}-postpone-${now}`, userId, questId, reason, now],
+      },
     ]);
+  }
+
+  /** Removes a quest and its steps (cascades) — used only for undecided quests during recalibration. */
+  async deleteQuest(questId: string): Promise<void> {
+    await this.db.execute('DELETE FROM quests WHERE id = ?', [questId]);
+  }
+
+  /**
+   * Marks quests as expired once their due date has passed without a
+   * decision. Runs lazily whenever quests are read for a new date, rather
+   * than on a schedule — there is no background process in this architecture.
+   */
+  async expireStaleQuests(userId: string, today: string, now: string): Promise<void> {
+    await this.db.execute(
+      `UPDATE quests SET status = 'expired', updated_at = ?
+        WHERE user_id = ? AND status IN ('detected','offered','accepted') AND due_date < ?`,
+      [now, userId, today],
+    );
   }
 
   async recentTemplateIds(userId: string, limit = 30): Promise<string[]> {
     const rows = await this.db.query(
       `SELECT payload FROM events
-        WHERE user_id = ? AND type = 'QuestOffered'
+        WHERE user_id = ? AND type = 'QuestGenerated'
         ORDER BY occurred_at DESC LIMIT ?`,
       [userId, limit],
     );
@@ -294,15 +453,7 @@ export class Repositories {
               name = excluded.name, description = excluded.description,
               category = excluded.category, rarity = excluded.rarity,
               secret = excluded.secret, icon = excluded.icon`,
-      params: [
-        a.id,
-        a.name,
-        a.description,
-        a.category,
-        a.rarity,
-        a.secret ? 1 : 0,
-        a.icon,
-      ] as SqlParam[],
+      params: [a.id, a.name, a.description, a.category, a.rarity, a.secret ? 1 : 0, a.icon] as SqlParam[],
     }));
     await this.db.transaction(statements);
   }
@@ -313,6 +464,15 @@ export class Repositories {
       [userId],
     );
     return new Set(rows.map((r) => asString(r['achievement_id'])));
+  }
+
+  /** Every unlock this user has, keyed by achievement id, for the achievements page. */
+  async getUnlockedMap(userId: string): Promise<Map<string, string>> {
+    const rows = await this.db.query(
+      'SELECT achievement_id, unlocked_at FROM achievement_unlocks WHERE user_id = ?',
+      [userId],
+    );
+    return new Map(rows.map((r) => [asString(r['achievement_id']), asString(r['unlocked_at'])]));
   }
 
   async getRecentUnlocks(
@@ -400,5 +560,11 @@ function toQuestRecord(row: Record<string, unknown>): QuestRecord {
     rationale: asNullableString(row['generation_rationale']),
     awardedXp: row['awarded_xp'] === null ? null : asNumber(row['awarded_xp']),
     dueDate: asNullableString(row['due_date']),
+    createdAt: asString(row['created_at']),
+    presentedAt: asNullableString(row['presented_at']),
+    postponedAt: asNullableString(row['postponed_at']),
+    completedAt: asNullableString(row['completed_at']),
+    reflectionNote: asNullableString(row['reflection_note']),
+    evidenceNote: asNullableString(row['evidence_note']),
   };
 }

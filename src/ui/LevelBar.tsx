@@ -1,5 +1,6 @@
 import { motion } from 'motion/react';
-import { t } from '../../i18n';
+import { t, formatNumber } from '../i18n';
+import './ui.css';
 
 interface Props {
   readonly level: number;
@@ -8,25 +9,20 @@ interface Props {
   readonly fraction: number;
 }
 
-export function LevelBar({
-  level,
-  xpIntoLevel,
-  xpForNextLevel,
-  fraction,
-}: Props): React.ReactElement {
+export function LevelBar({ level, xpIntoLevel, xpForNextLevel, fraction }: Props): React.ReactElement {
   const percent = Math.round(fraction * 100);
 
   return (
-    <section className="level-bar" aria-label={`${t('dashboard.level')} ${level}`}>
+    <section className="level-bar" aria-label={`${t('topbar.level')} ${level}`}>
       <div className="level-bar__head">
         <div className="level-bar__level">
-          <span className="level-bar__level-label">{t('dashboard.level')}</span>
+          <span className="level-bar__level-label">{t('topbar.level')}</span>
           <span className="level-bar__level-value numeric">{level}</span>
         </div>
         <span className="level-bar__detail numeric">
-          {t('dashboard.xpToNext', {
-            current: xpIntoLevel.toLocaleString(),
-            required: xpForNextLevel.toLocaleString(),
+          {t('progression.xpToNext', {
+            current: formatNumber(xpIntoLevel),
+            required: formatNumber(xpForNextLevel),
             next: level + 1,
           })}
         </span>

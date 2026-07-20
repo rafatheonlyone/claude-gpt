@@ -1,0 +1,126 @@
+.status {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-48);
+}
+
+.status--loading {
+  display: grid;
+  place-items: center;
+}
+
+.status > * {
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+.status__title {
+  font-size: var(--type-display);
+  font-weight: 300;
+  margin-bottom: var(--space-32);
+}
+
+.status__section {
+  margin-bottom: var(--space-32);
+}
+
+.status__section-title {
+  font-size: var(--type-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-16);
+}
+
+.status__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-24);
+  margin: 0;
+  padding: var(--space-24);
+  border-radius: var(--radius-lg);
+  border: var(--border-hairline);
+  border-top: var(--border-lit);
+  background: linear-gradient(160deg, rgba(19, 26, 44, 0.7), rgba(13, 18, 32, 0.85));
+}
+
+.status__stat dt {
+  font-size: var(--type-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-4);
+}
+
+.status__stat dd {
+  margin: 0;
+  font-size: var(--type-heading);
+  font-weight: 500;
+}
+
+.status__domains {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.status__domain {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  padding: var(--space-8) var(--space-16);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.status__domain-spine {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--domain-academic);
+  flex-shrink: 0;
+}
+
+.status__domain[data-domain='physical'] .status__domain-spine {
+  background: var(--domain-physical);
+}
+.status__domain[data-domain='technical'] .status__domain-spine {
+  background: var(--domain-technical);
+}
+.status__domain[data-domain='mental'] .status__domain-spine {
+  background: var(--domain-mental);
+}
+.status__domain[data-domain='creative'] .status__domain-spine {
+  background: var(--domain-creative);
+}
+.status__domain[data-domain='social'] .status__domain-spine {
+  background: var(--domain-social);
+}
+.status__domain[data-domain='financial'] .status__domain-spine {
+  background: var(--domain-financial);
+}
+.status__domain[data-domain='recovery'] .status__domain-spine {
+  background: var(--domain-recovery);
+}
+
+.status__domain-name {
+  flex: 1;
+  font-size: var(--type-body);
+}
+
+.status__domain-level,
+.status__domain-xp {
+  font-size: var(--type-detail);
+  color: var(--text-tertiary);
+}
+
+.status__coming-soon {
+  padding: var(--space-24);
+  border-radius: var(--radius-lg);
+  border: 1px dashed rgba(122, 160, 255, 0.16);
+  color: var(--text-secondary);
+  font-style: italic;
+}

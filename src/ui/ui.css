@@ -1,87 +1,12 @@
-.dashboard {
-  position: relative;
-  height: 100%;
-  overflow-y: auto;
-  padding: var(--space-48) var(--space-48) var(--space-96);
-}
-
-.dashboard--loading,
-.dashboard--error {
-  display: grid;
-  place-items: center;
-}
-
-.dashboard__ambient {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(700px 420px at 78% 4%, rgba(139, 108, 255, 0.07), transparent 68%),
-    radial-gradient(600px 380px at 12% 96%, rgba(79, 217, 232, 0.05), transparent 68%);
-  opacity: calc(0.4 + 0.6 * var(--motion-scale));
-}
-
-.dashboard > *:not(.dashboard__ambient) {
-  position: relative;
-  max-width: 900px;
-  margin-inline: auto;
-}
-
-/* ------------------------------------------------------------------ header */
-
-.dashboard__header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-24);
-  margin-bottom: var(--space-32);
-}
-
-.dashboard__eyebrow {
-  font-size: var(--type-micro);
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: var(--accent-core);
-  margin-bottom: var(--space-8);
-}
-
-.dashboard__greeting {
-  font-size: var(--type-display);
-  font-weight: 300;
-  letter-spacing: -0.01em;
-}
-
-.dashboard__stats {
-  display: flex;
-  gap: var(--space-32);
-  margin: 0;
-}
-
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.stat__label {
-  font-size: var(--type-micro);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-}
-
-.stat__value {
-  font-size: var(--type-heading);
-  font-weight: 500;
-  color: var(--text-primary);
-}
+/**
+ * Shared design-system components: quest cards, the level bar, and
+ * achievement presentation. Used across Home, Today, Quests and the shell.
+ */
 
 /* --------------------------------------------------------------- level bar */
 
 .level-bar {
   padding: var(--space-24);
-  margin-bottom: var(--space-32);
   border-radius: var(--radius-lg);
   border: var(--border-hairline);
   border-top: var(--border-lit);
@@ -138,18 +63,10 @@
 
 /* ------------------------------------------------------------------ quests */
 
-.dashboard__section-title {
-  font-size: var(--type-micro);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  margin-bottom: var(--space-16);
-}
-
 .quest-list {
   list-style: none;
   padding: 0;
-  margin: 0 0 var(--space-32);
+  margin: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-12);
@@ -219,6 +136,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-12);
+  min-width: 0;
 }
 
 .quest-card__meta {
@@ -236,27 +154,49 @@
   opacity: 0.4;
 }
 
+/* One badge system for every quest state. Colour is always paired with the
+   text label itself, never the sole carrier of status. */
 .quest-card__badge {
   padding: 2px var(--space-8);
   border-radius: var(--radius-pill);
   border: var(--border-hairline);
   background: rgba(255, 255, 255, 0.04);
+  color: var(--text-tertiary);
 }
 
-.quest-card__badge--accepted {
+.quest-card__badge[data-status='accepted'] {
   border-color: rgba(122, 160, 255, 0.4);
   color: var(--accent-bright);
 }
 
-.quest-card__badge--complete {
+.quest-card__badge[data-status='completed'] {
   border-color: rgba(63, 207, 142, 0.4);
   color: var(--state-positive);
+}
+
+.quest-card__badge[data-status='rejected'],
+.quest-card__badge[data-status='postponed'] {
+  color: var(--text-secondary);
+}
+
+.quest-card__badge[data-status='expired'],
+.quest-card__badge[data-status='skipped'] {
+  color: var(--text-disabled);
+}
+
+.quest-card__title-button {
+  text-align: left;
 }
 
 .quest-card__title {
   font-size: var(--type-title);
   font-weight: 500;
   letter-spacing: -0.01em;
+  transition: color var(--motion-quick) var(--ease-standard);
+}
+
+.quest-card__title-button:hover .quest-card__title {
+  color: var(--accent-bright);
 }
 
 .quest-card__description {
@@ -304,28 +244,9 @@
 
 .quest-card__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-8);
   margin-top: var(--space-4);
-}
-
-/* ------------------------------------------------------------------- empty */
-
-.dashboard__empty {
-  padding: var(--space-48);
-  border-radius: var(--radius-lg);
-  border: 1px dashed rgba(122, 160, 255, 0.16);
-  text-align: center;
-}
-
-.dashboard__empty-title {
-  font-size: var(--type-heading);
-  color: var(--text-secondary);
-  margin-bottom: var(--space-8);
-}
-
-.dashboard__empty-body {
-  font-size: var(--type-detail);
-  color: var(--text-tertiary);
 }
 
 /* ------------------------------------------------------------ level flash */
@@ -344,7 +265,9 @@
   border-radius: var(--radius-xl);
   border: 1px solid rgba(122, 160, 255, 0.35);
   background: linear-gradient(160deg, rgba(19, 26, 44, 0.96), rgba(8, 11, 22, 0.98));
-  box-shadow: var(--shadow-raised), var(--glow-accent);
+  box-shadow:
+    var(--shadow-raised),
+    var(--glow-accent);
   pointer-events: none;
 }
 
@@ -475,15 +398,27 @@
   color: var(--text-primary);
 }
 
+/* --------------------------------------------------------------- empty state */
+
+.empty-state {
+  padding: var(--space-48);
+  border-radius: var(--radius-lg);
+  border: 1px dashed rgba(122, 160, 255, 0.16);
+  text-align: center;
+}
+
+.empty-state__title {
+  font-size: var(--type-heading);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-8);
+}
+
+.empty-state__body {
+  font-size: var(--type-detail);
+  color: var(--text-tertiary);
+}
+
 @media (max-width: 720px) {
-  .dashboard {
-    padding: var(--space-24) var(--space-16) var(--space-64);
-  }
-
-  .dashboard__stats {
-    gap: var(--space-16);
-  }
-
   .level-flash {
     padding: var(--space-32) var(--space-48);
   }

@@ -67,10 +67,19 @@ describe('quest generation', () => {
     await service.completeOnboarding(onboarding);
   });
 
-  it('offers quests on the first dashboard load', async () => {
+  it('generates quests as detected, awaiting the cinematic encounter', async () => {
+    // Newly generated quests are not yet "available" — they enter the
+    // encounter queue first, and only become offered once presented. This is
+    // what makes the encounter idempotent across a restart.
     const dashboard = await service.getDashboard();
     expect(dashboard.quests.length).toBeGreaterThan(0);
-    expect(dashboard.quests.every((q) => q.status === 'offered')).toBe(true);
+    expect(dashboard.quests.every((q) => q.status === 'detected')).toBe(true);
+  });
+
+  it('surfaces detected quests through the pending-encounter queue', async () => {
+    const dashboard = await service.getDashboard();
+    const pending = await service.getPendingEncounters();
+    expect(pending.map((q) => q.id).sort()).toEqual(dashboard.quests.map((q) => q.id).sort());
   });
 
   it('gives every quest steps, a purpose and a rationale', async () => {
@@ -259,7 +268,7 @@ describe('the event log is the source of truth', () => {
     const types = events.map((e) => String(e['type']));
 
     expect(types).toContain('OnboardingCompleted');
-    expect(types).toContain('QuestOffered');
+    expect(types).toContain('QuestGenerated');
     expect(types).toContain('QuestAccepted');
     expect(types).toContain('QuestCompleted');
   });
@@ -275,5 +284,216 @@ describe('the event log is the source of truth', () => {
       "SELECT formula_version FROM events WHERE type = 'QuestCompleted'",
     );
     expect(Number(rows[0]?.['formula_version'])).toBeGreaterThan(0);
+  });
+});
+
+describe('the cinematic encounter lifecycle', () => {
+  beforeEach(async () => {
+    await service.completeOnboarding(onboarding);
+  });
+
+  it('presents a detected quest, stamping when it was shown', async () => {
+    const [quest] = await service.getPendingEncounters();
+    await service.presentQuest(quest!.id);
+
+    const detail = await service.getQuestDetail(quest!.id);
+    expect(detail?.status).toBe('offered');
+    expect(detail?.presentedAt).not.toBeNull();
+  });
+
+  it('is idempotent — presenting twice does not error or move an already-offered quest', async () => {
+    const [quest] = await service.getPendingEncounters();
+    await service.presentQuest(quest!.id);
+    const firstPresentedAt = (await service.getQuestDetail(quest!.id))?.presentedAt;
+
+    await service.presentQuest(quest!.id);
+    const secondPresentedAt = (await service.getQuestDetail(quest!.id))?.presentedAt;
+
+    expect(secondPresentedAt).toBe(firstPresentedAt);
+  });
+
+  it('stamps presentedAt even when a quest is accepted without an explicit presentQuest call', async () => {
+    // The UI always presents first, but the service must stay honest even if
+    // a caller skips that step — a decision on a quest means it was seen.
+    const [quest] = await service.getPendingEncounters();
+    await service.acceptQuest(quest!.id);
+
+    const detail = await service.getQuestDetail(quest!.id);
+    expect(detail?.status).toBe('accepted');
+    expect(detail?.presentedAt).not.toBeNull();
+  });
+
+  it('postpones a quest and records it in feedback history rather than deleting it', async () => {
+    const [quest] = await service.getPendingEncounters();
+    await service.postponeQuest(quest!.id, 'later today');
+
+    const detail = await service.getQuestDetail(quest!.id);
+    expect(detail?.status).toBe('postponed');
+    expect(detail?.postponedAt).not.toBeNull();
+    expect(detail?.feedback.some((f) => f.action === 'postponed')).toBe(true);
+  });
+});
+
+describe('recalibrateToday', () => {
+  beforeEach(async () => {
+    await service.completeOnboarding(onboarding);
+  });
+
+  it('replaces undecided quests with a fresh set', async () => {
+    const before = await service.getDashboard();
+    const result = await service.recalibrateToday();
+
+    expect(result.removed).toBe(before.quests.length);
+    expect(result.added).toBeGreaterThan(0);
+
+    const after = await service.getDashboard();
+    expect(after.quests.every((q) => q.status === 'detected')).toBe(true);
+  });
+
+  it('never touches a quest the user already accepted', async () => {
+    const [first] = await service.getPendingEncounters();
+    await service.acceptQuest(first!.id);
+
+    await service.recalibrateToday();
+
+    const stillThere = await service.getQuestDetail(first!.id);
+    expect(stillThere?.status).toBe('accepted');
+  });
+
+  it('never touches a completed quest', async () => {
+    const [first] = await service.getPendingEncounters();
+    await service.acceptQuest(first!.id);
+    await service.completeQuest(first!.id);
+
+    await service.recalibrateToday();
+
+    const stillThere = await service.getQuestDetail(first!.id);
+    expect(stillThere?.status).toBe('completed');
+  });
+});
+
+describe('getAllQuests', () => {
+  beforeEach(async () => {
+    await service.completeOnboarding(onboarding);
+  });
+
+  it('never includes undecided (detected) quests in the browsable list', async () => {
+    await service.getDashboard();
+    const all = await service.getAllQuests();
+    expect(all.every((q) => q.status !== 'detected')).toBe(true);
+  });
+
+  it('includes a quest once it has been decided on', async () => {
+    const [quest] = await service.getPendingEncounters();
+    await service.presentQuest(quest!.id);
+
+    const all = await service.getAllQuests();
+    expect(all.map((q) => q.id)).toContain(quest!.id);
+  });
+
+  it('filters by status', async () => {
+    const [quest] = await service.getPendingEncounters();
+    await service.rejectQuest(quest!.id);
+
+    const rejected = await service.getAllQuests({ status: ['rejected'] });
+    expect(rejected.every((q) => q.status === 'rejected')).toBe(true);
+    expect(rejected.map((q) => q.id)).toContain(quest!.id);
+  });
+
+  it('filters by a search term against the title', async () => {
+    const [quest] = await service.getPendingEncounters();
+    await service.presentQuest(quest!.id);
+
+    const found = await service.getAllQuests({ search: quest!.title.slice(0, 6) });
+    expect(found.map((q) => q.id)).toContain(quest!.id);
+  });
+});
+
+describe('getAchievementsCatalog', () => {
+  it('lists every registered achievement as locked before any quest is completed', async () => {
+    await service.completeOnboarding(onboarding);
+    const catalog = await service.getAchievementsCatalog();
+
+    expect(catalog.length).toBeGreaterThan(0);
+    expect(catalog.every((entry) => !entry.unlocked && entry.unlockedAt === null)).toBe(true);
+  });
+
+  it('flips an entry to unlocked once its condition is met', async () => {
+    await service.completeOnboarding(onboarding);
+    const dashboard = await service.getDashboard();
+    await service.acceptQuest(dashboard.quests[0]!.id);
+    await service.completeQuest(dashboard.quests[0]!.id);
+
+    const catalog = await service.getAchievementsCatalog();
+    const firstSteps = catalog.find((entry) => entry.definition.id === 'first_steps');
+    expect(firstSteps?.unlocked).toBe(true);
+    expect(firstSteps?.unlockedAt).not.toBeNull();
+  });
+});
+
+describe('getArchitectSnapshot', () => {
+  it('reflects the priorities set during onboarding', async () => {
+    await service.completeOnboarding(onboarding);
+    await service.getDashboard();
+
+    const snapshot = await service.getArchitectSnapshot();
+    expect(snapshot.goals).toEqual(onboarding.goals);
+    expect(snapshot.availableMinutes).toBe(onboarding.availableMinutes);
+    expect(snapshot.recentQuests.length).toBeGreaterThan(0);
+  });
+});
+
+describe('locale preference', () => {
+  it('defaults to Brazilian Portuguese', async () => {
+    await service.completeOnboarding(onboarding);
+    expect(await service.getLocalePreference()).toBe('pt-BR');
+  });
+
+  it('persists an explicit change across a restart', async () => {
+    await service.completeOnboarding(onboarding);
+    await service.setLocalePreference('en');
+
+    const restarted = await SystemService.create(createTestPlatform({ storage }));
+    expect(await restarted.getLocalePreference()).toBe('en');
+  });
+
+  it('does not clobber other profile fields when changing locale', async () => {
+    await service.completeOnboarding(onboarding);
+    await service.setLocalePreference('en');
+
+    const dashboard = await service.getDashboard();
+    expect(dashboard.displayName).toBe('Operator');
+  });
+});
+
+describe('getAppInfo', () => {
+  it('reports the current schema version and application paths', async () => {
+    const info = await service.getAppInfo();
+    expect(info.version.length).toBeGreaterThan(0);
+    expect(info.schemaVersion).toBeGreaterThanOrEqual(2);
+    expect(info.dataDir.length).toBeGreaterThan(0);
+    expect(info.database.length).toBeGreaterThan(0);
+  });
+});
+
+describe('getProfileSummary', () => {
+  it('never generates quests as a side effect of reading the summary', async () => {
+    await service.completeOnboarding(onboarding);
+    await service.getProfileSummary();
+
+    const quests = await storage.query('SELECT COUNT(*) AS n FROM quests');
+    expect(Number(quests[0]?.['n'])).toBe(0);
+  });
+
+  it('matches the totals reported by getDashboard', async () => {
+    await service.completeOnboarding(onboarding);
+    const dashboard = await service.getDashboard();
+    await service.acceptQuest(dashboard.quests[0]!.id);
+    await service.completeQuest(dashboard.quests[0]!.id);
+
+    const summary = await service.getProfileSummary();
+    const after = await service.getDashboard();
+    expect(summary.totalXp).toBe(after.totalXp);
+    expect(summary.level).toBe(after.level);
   });
 });

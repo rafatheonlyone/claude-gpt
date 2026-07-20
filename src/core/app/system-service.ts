@@ -1,13 +1,16 @@
 import type { Platform } from '../platform';
 import type { Domain } from '../domain/types';
 import type { Difficulty, EvidenceLevel } from '../progression/xp';
+import type { ContentLocale } from '../content-locale';
+import { DEFAULT_CONTENT_LOCALE } from '../content-locale';
 import { Migrator } from '../persistence/migrator';
-import { Repositories, type QuestRecord } from './repositories';
+import { Repositories, type QuestRecord, type QuestListFilter, type QuestFeedbackRecord } from './repositories';
 import { calculateXpAward, type XpAwardResult } from '../progression/xp';
 import { levelFromTotalXp, LEVEL_FORMULA_VERSION } from '../progression/levels';
 import { generateQuests, type DifficultyPreference, type RecoveryState } from '../quests/generator';
 import { evaluateAchievements, orderForPresentation } from '../achievements/engine';
-import type { AchievementDefinition } from '../achievements/definitions';
+import { ACHIEVEMENTS, type AchievementDefinition } from '../achievements/definitions';
+import { APP_VERSION } from '../version';
 import { uuidv7 } from '../util/id';
 import { daysBetween } from '../platform/clock';
 
@@ -24,9 +27,11 @@ export interface OnboardingInput {
   readonly soundEnabled: boolean;
 }
 
-export interface DashboardQuest extends QuestRecord {
+export interface QuestSteps {
   readonly steps: ReadonlyArray<{ id: string; description: string; optional: boolean }>;
 }
+
+export type DashboardQuest = QuestRecord & QuestSteps;
 
 export interface DashboardState {
   readonly displayName: string;
@@ -42,6 +47,73 @@ export interface DashboardState {
   readonly recentAchievements: ReadonlyArray<{ id: string; unlockedAt: string }>;
 }
 
+export interface ProfileSummary {
+  readonly displayName: string;
+  readonly totalXp: number;
+  readonly level: number;
+  readonly xpIntoLevel: number;
+  readonly xpForNextLevel: number;
+  readonly fraction: number;
+  readonly rank: string;
+}
+
+export interface QuestDetail extends DashboardQuest {
+  readonly feedback: readonly QuestFeedbackRecord[];
+}
+
+export interface AchievementCatalogEntry {
+  readonly definition: AchievementDefinition;
+  readonly unlocked: boolean;
+  readonly unlockedAt: string | null;
+}
+
+export interface ArchitectSnapshot {
+  readonly recentQuests: readonly QuestRecord[];
+  readonly goals: readonly string[];
+  readonly availableMinutes: number;
+  readonly difficultyPreference: DifficultyPreference;
+}
+
+export interface RecalibrationResult {
+  readonly removed: number;
+  readonly added: number;
+}
+
+export interface DomainSummary {
+  readonly domain: Domain;
+  readonly totalXp: number;
+  readonly level: number;
+  readonly lastActive: string | null;
+}
+
+export interface StatusSummary {
+  readonly displayName: string;
+  readonly birthDate: string | null;
+  readonly joinedAt: string;
+  readonly level: number;
+  readonly totalXp: number;
+  readonly rank: string;
+  readonly questsCompleted: number;
+  readonly achievementsUnlocked: number;
+  readonly achievementsTotal: number;
+  readonly domains: readonly DomainSummary[];
+}
+
+export interface AppInfo {
+  readonly version: string;
+  readonly schemaVersion: number;
+  readonly dataDir: string;
+  readonly backupDir: string;
+  readonly database: string;
+}
+
+export interface CompletionOptions {
+  readonly completion?: number;
+  readonly evidence?: EvidenceLevel;
+  readonly reflection?: string;
+  readonly evidenceNote?: string;
+}
+
 export interface CompletionOutcome {
   readonly award: XpAwardResult;
   readonly levelBefore: number;
@@ -51,7 +123,11 @@ export interface CompletionOutcome {
   readonly achievements: readonly AchievementDefinition[];
 }
 
-const PREF_NAMESPACE = 'profile';
+/** Preferences captured during onboarding: goals, capacity, presentation. */
+const PREF_NAMESPACE_PROFILE = 'profile';
+/** Application-level preferences set later, from Settings: locale, volumes, presentation mode. */
+const PREF_NAMESPACE_APP = 'app';
+const LOCALE_KEY = 'locale';
 
 /**
  * Application service — the orchestration layer between the UI and the domain.
@@ -91,15 +167,16 @@ export class SystemService {
 
   async completeOnboarding(input: OnboardingInput): Promise<void> {
     const now = this.platform.clock.now().toISOString();
+    const locale = await this.getLocalePreference();
 
     await this.repos.saveProfile(
       this.userId,
       {
-        displayName: input.displayName.trim() || 'Operator',
+        displayName: input.displayName.trim() || 'Operador',
         birthDate: input.birthDate,
         country: input.country,
         timezone: this.platform.clock.timezone(),
-        locale: 'en',
+        locale,
       },
       now,
     );
@@ -114,7 +191,7 @@ export class SystemService {
       ['soundEnabled', input.soundEnabled],
     ];
     for (const [key, value] of preferences) {
-      await this.repos.setPreference(this.userId, PREF_NAMESPACE, key, value, now);
+      await this.repos.setPreference(this.userId, PREF_NAMESPACE_PROFILE, key, value, now);
     }
 
     await this.repos.setOnboardingComplete(this.userId, now);
@@ -122,24 +199,87 @@ export class SystemService {
   }
 
   async getPreferences(): Promise<Record<string, unknown>> {
-    return this.repos.getPreferences(this.userId, PREF_NAMESPACE);
+    return this.repos.getPreferences(this.userId, PREF_NAMESPACE_PROFILE);
   }
+
+  async getAppPreferences(): Promise<Record<string, unknown>> {
+    return this.repos.getPreferences(this.userId, PREF_NAMESPACE_APP);
+  }
+
+  async setAppPreference(key: string, value: unknown): Promise<void> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.setPreference(this.userId, PREF_NAMESPACE_APP, key, value, now);
+  }
+
+  /**
+   * Updates a preference set during onboarding (goals, capacity, sound,
+   * animation intensity, ...). Kept in the same namespace `getPreferences`
+   * reads, so a change made later in Settings is seen consistently by both
+   * the boot-time preference application and the onboarding defaults.
+   */
+  async setProfilePreference(key: string, value: unknown): Promise<void> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.setPreference(this.userId, PREF_NAMESPACE_PROFILE, key, value, now);
+  }
+
+  // -------------------------------------------------------------- locale
+
+  async getLocalePreference(): Promise<ContentLocale> {
+    const value = await this.repos.getPreferenceValue(this.userId, PREF_NAMESPACE_APP, LOCALE_KEY);
+    return value === 'en' ? 'en' : DEFAULT_CONTENT_LOCALE;
+  }
+
+  async setLocalePreference(locale: ContentLocale): Promise<void> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.setPreference(this.userId, PREF_NAMESPACE_APP, LOCALE_KEY, locale, now);
+
+    // Keep the informational profiles.locale column in sync without
+    // clobbering fields this method does not own.
+    const user = await this.repos.findUser();
+    if (user) {
+      await this.repos.saveProfile(
+        this.userId,
+        {
+          displayName: user.displayName,
+          birthDate: user.birthDate,
+          country: user.country,
+          timezone: user.timezone,
+          locale,
+        },
+        now,
+      );
+    }
+  }
+
+  // ------------------------------------------------------------- app info
+
+  async getAppInfo(): Promise<AppInfo> {
+    const [paths, schemaVersion] = await Promise.all([
+      this.platform.info.paths(),
+      new Migrator(this.platform.storage, this.platform.clock).currentVersion(),
+    ]);
+    return { version: APP_VERSION, schemaVersion, ...paths };
+  }
+
+  async runBackupNow(label?: string): Promise<string> {
+    return this.platform.storage.backup(label);
+  }
+
+  // ----------------------------------------------------------- dashboard
 
   /**
    * Today's quests, generating and persisting them once per day.
    *
    * Generation is keyed on the date, so reopening the app never rerolls the
-   * day — that would feel arbitrary and would invite reroll-farming.
+   * day — that would feel arbitrary and would invite reroll-farming. Newly
+   * generated quests start as `detected`: they are not yet visible as
+   * "available" until the cinematic encounter (or a silent pass, if the user
+   * disabled it) presents them — see `presentQuest`.
    */
   async getDashboard(): Promise<DashboardState> {
     const date = this.platform.clock.today();
     const user = await this.repos.findUser();
-
-    let quests = await this.repos.getQuestsForDate(this.userId, date);
-    if (quests.length === 0) {
-      await this.generateForDate(date);
-      quests = await this.repos.getQuestsForDate(this.userId, date);
-    }
+    const quests = await this.ensureTodayQuests(date);
 
     const [state, stats, recentAchievements] = await Promise.all([
       this.repos.getProfileState(this.userId),
@@ -149,21 +289,8 @@ export class SystemService {
 
     const progress = levelFromTotalXp(state.totalXp);
 
-    const withSteps: DashboardQuest[] = [];
-    for (const quest of quests) {
-      const steps = await this.repos.getSteps(quest.id);
-      withSteps.push({
-        ...quest,
-        steps: steps.map((s) => ({
-          id: s.id,
-          description: s.description,
-          optional: s.optional,
-        })),
-      });
-    }
-
     return {
-      displayName: user?.displayName ?? 'Operator',
+      displayName: user?.displayName ?? 'Operador',
       totalXp: state.totalXp,
       level: progress.level,
       xpIntoLevel: progress.xpIntoLevel,
@@ -172,13 +299,59 @@ export class SystemService {
       rank: state.rank,
       questsCompleted: stats.questsCompleted,
       activeDays: stats.activeDays,
-      quests: withSteps,
+      quests: await this.withSteps(quests),
       recentAchievements,
     };
   }
 
-  private async generateForDate(date: string): Promise<void> {
-    const prefs = await this.getPreferences();
+  /** Pure read for chrome that renders on every page (the top bar). Never generates quests. */
+  async getProfileSummary(): Promise<ProfileSummary> {
+    const [user, state] = await Promise.all([this.repos.findUser(), this.repos.getProfileState(this.userId)]);
+    const progress = levelFromTotalXp(state.totalXp);
+    return {
+      displayName: user?.displayName ?? 'Operador',
+      totalXp: state.totalXp,
+      level: progress.level,
+      xpIntoLevel: progress.xpIntoLevel,
+      xpForNextLevel: progress.xpForNextLevel,
+      fraction: progress.fraction,
+      rank: state.rank,
+    };
+  }
+
+  /**
+   * Expires overdue quests and generates today's set if none exist yet.
+   *
+   * Shared by `getDashboard` and `getPendingEncounters` so the encounter
+   * queue works correctly regardless of which page happens to mount first —
+   * the Shell hosts the queue independently of the Home/Today routes.
+   */
+  private async ensureTodayQuests(date: string): Promise<QuestRecord[]> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.expireStaleQuests(this.userId, date, now);
+
+    let quests = await this.repos.getQuestsForDate(this.userId, date);
+    if (quests.length === 0) {
+      await this.generateForDate(date);
+      quests = await this.repos.getQuestsForDate(this.userId, date);
+    }
+    return quests;
+  }
+
+  private async withSteps(quests: readonly QuestRecord[]): Promise<DashboardQuest[]> {
+    const withSteps: DashboardQuest[] = [];
+    for (const quest of quests) {
+      const steps = await this.repos.getSteps(quest.id);
+      withSteps.push({
+        ...quest,
+        steps: steps.map((s) => ({ id: s.id, description: s.description, optional: s.optional })),
+      });
+    }
+    return withSteps;
+  }
+
+  private async generateForDate(date: string, seedSuffix = ''): Promise<void> {
+    const [prefs, locale] = await Promise.all([this.getPreferences(), this.getLocalePreference()]);
     const [domainLastActive, recentTemplateIds] = await Promise.all([
       this.repos.getDomainLastActive(this.userId),
       this.repos.recentTemplateIds(this.userId),
@@ -196,7 +369,11 @@ export class SystemService {
       injuredAreas: stringArrayPref(prefs['injuredAreas']),
       recoveryState: 'unknown' as RecoveryState,
       difficultyPreference: (prefs['difficultyPreference'] as DifficultyPreference) ?? 'balanced',
+      locale,
       count: 3,
+      // Spread rather than assigning `undefined`: exactOptionalPropertyTypes
+      // treats an explicit undefined differently from an absent key.
+      ...(seedSuffix ? { seedSuffix } : {}),
     });
 
     const now = this.platform.clock.now().toISOString();
@@ -210,7 +387,7 @@ export class SystemService {
                   (id, user_id, title, description, purpose, quest_type, domain, difficulty,
                    estimated_minutes, status, due_date, generation_rationale, source,
                    evidence_level, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', ?, ?, 'rules', 'self_reported', ?, ?)`,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'detected', ?, ?, 'rules', 'self_reported', ?, ?)`,
           params: [
             questId,
             this.userId,
@@ -236,7 +413,7 @@ export class SystemService {
           sql: `INSERT INTO events
                   (id, user_id, type, payload, occurred_at, recorded_at, occurred_date,
                    formula_version, source)
-                VALUES (?, ?, 'QuestOffered', ?, ?, ?, ?, ?, 'rules')`,
+                VALUES (?, ?, 'QuestGenerated', ?, ?, ?, ?, ?, 'rules')`,
           params: [
             uuidv7(this.platform.clock.now().getTime()),
             this.userId,
@@ -251,6 +428,50 @@ export class SystemService {
 
       await this.platform.storage.transaction(statements);
     }
+  }
+
+  // -------------------------------------------------------------- quests
+
+  async getAllQuests(filter: QuestListFilter = {}): Promise<DashboardQuest[]> {
+    const quests = await this.repos.getAllQuests(this.userId, filter);
+    return this.withSteps(quests);
+  }
+
+  async getQuestDetail(questId: string): Promise<QuestDetail | null> {
+    const quest = await this.repos.getQuest(questId);
+    if (!quest) return null;
+    const [steps, feedback] = await Promise.all([
+      this.repos.getSteps(questId),
+      this.repos.getQuestFeedback(questId),
+    ]);
+    return {
+      ...quest,
+      steps: steps.map((s) => ({ id: s.id, description: s.description, optional: s.optional })),
+      feedback,
+    };
+  }
+
+  /**
+   * Quests generated but not yet shown to the user — the cinematic encounter
+   * queue. Ensures today's quests exist first, so the queue is never empty
+   * merely because this was the first call of the session.
+   */
+  async getPendingEncounters(): Promise<DashboardQuest[]> {
+    await this.ensureTodayQuests(this.platform.clock.today());
+    const quests = await this.repos.getPendingEncounters(this.userId);
+    return this.withSteps(quests);
+  }
+
+  /**
+   * Marks a quest as presented (detected -> offered).
+   *
+   * This is what makes the encounter idempotent across restarts: the
+   * transition is persisted the moment the quest is shown, not when the user
+   * finally decides, so closing the app mid-encounter never re-triggers it.
+   */
+  async presentQuest(questId: string): Promise<void> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.presentQuest(questId, now);
   }
 
   async acceptQuest(questId: string): Promise<void> {
@@ -270,16 +491,50 @@ export class SystemService {
     );
   }
 
+  /** Postponing keeps the quest in history rather than discarding it silently. */
+  async postponeQuest(questId: string, reason?: string): Promise<void> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.postponeQuest(this.userId, questId, reason ?? null, now);
+  }
+
+  /**
+   * Discards today's undecided quests (`detected`/`offered`) and generates a
+   * fresh set. Quests the user already acted on — accepted, completed,
+   * rejected, postponed — are never touched; a recalibration is not a
+   * reset of a day's real decisions.
+   */
+  async recalibrateToday(): Promise<RecalibrationResult> {
+    const date = this.platform.clock.today();
+    const current = await this.repos.getQuestsForDate(this.userId, date);
+    const removable = current.filter((q) => q.status === 'detected' || q.status === 'offered');
+
+    for (const quest of removable) {
+      await this.repos.deleteQuest(quest.id);
+    }
+
+    const nonceKey = `rerollCount:${date}`;
+    const now = this.platform.clock.now().toISOString();
+    const priorNonce = Number(
+      (await this.repos.getPreferenceValue(this.userId, PREF_NAMESPACE_APP, nonceKey)) ?? 0,
+    );
+    const nextNonce = priorNonce + 1;
+    await this.repos.setPreference(this.userId, PREF_NAMESPACE_APP, nonceKey, nextNonce, now);
+
+    await this.generateForDate(date, String(nextNonce));
+
+    const survivingCount = current.length - removable.length;
+    const afterCount = (await this.repos.getQuestsForDate(this.userId, date)).length;
+
+    return { removed: removable.length, added: afterCount - survivingCount };
+  }
+
   /**
    * Complete a quest and award progression.
    *
    * The event log and every projection are written in a single transaction, so
    * the record can never disagree with the totals derived from it.
    */
-  async completeQuest(
-    questId: string,
-    options: { completion?: number; evidence?: EvidenceLevel } = {},
-  ): Promise<CompletionOutcome> {
+  async completeQuest(questId: string, options: CompletionOptions = {}): Promise<CompletionOutcome> {
     const quest = await this.repos.getQuest(questId);
     if (!quest) throw new Error(`quest not found: ${questId}`);
     if (quest.status === 'completed') {
@@ -288,6 +543,8 @@ export class SystemService {
 
     const completion = options.completion ?? 1;
     const evidence = options.evidence ?? 'self_reported';
+    const reflection = options.reflection?.trim() || null;
+    const evidenceNote = options.evidenceNote?.trim() || null;
     const date = this.platform.clock.today();
     const now = this.platform.clock.now().toISOString();
 
@@ -309,9 +566,10 @@ export class SystemService {
 
     await this.platform.storage.transaction([
       {
-        sql: `UPDATE quests SET status = 'completed', awarded_xp = ?, completed_at = ?, updated_at = ?
+        sql: `UPDATE quests SET status = 'completed', awarded_xp = ?, completed_at = ?, updated_at = ?,
+                reflection_note = ?, evidence_note = ?
               WHERE id = ?`,
-        params: [award.creditedXp, now, now, questId],
+        params: [award.creditedXp, now, now, reflection, evidenceNote, questId],
       },
       {
         sql: `INSERT INTO events
@@ -372,6 +630,17 @@ export class SystemService {
     };
   }
 
+  // -------------------------------------------------------------- achievements
+
+  async getAchievementsCatalog(): Promise<AchievementCatalogEntry[]> {
+    const unlockedMap = await this.repos.getUnlockedMap(this.userId);
+    return ACHIEVEMENTS.map((definition) => ({
+      definition,
+      unlocked: unlockedMap.has(definition.id),
+      unlockedAt: unlockedMap.get(definition.id) ?? null,
+    }));
+  }
+
   private async evaluateAndUnlockAchievements(
     totalXp: number,
     level: number,
@@ -411,6 +680,47 @@ export class SystemService {
     );
 
     return orderForPresentation(newly);
+  }
+
+  // ------------------------------------------------------------------ status
+
+  async getStatusSummary(): Promise<StatusSummary> {
+    const [user, state, stats, domains, unlocked] = await Promise.all([
+      this.repos.findUser(),
+      this.repos.getProfileState(this.userId),
+      this.repos.getCompletionStats(this.userId),
+      this.repos.getDomainStates(this.userId),
+      this.repos.getUnlockedAchievementIds(this.userId),
+    ]);
+
+    return {
+      displayName: user?.displayName ?? 'Operador',
+      birthDate: user?.birthDate ?? null,
+      joinedAt: user?.createdAt ?? this.platform.clock.now().toISOString(),
+      level: levelFromTotalXp(state.totalXp).level,
+      totalXp: state.totalXp,
+      rank: state.rank,
+      questsCompleted: stats.questsCompleted,
+      achievementsUnlocked: unlocked.size,
+      achievementsTotal: ACHIEVEMENTS.length,
+      domains,
+    };
+  }
+
+  // -------------------------------------------------------------- architect
+
+  async getArchitectSnapshot(): Promise<ArchitectSnapshot> {
+    const [recentQuests, prefs] = await Promise.all([
+      this.repos.getRecentGeneratedQuests(this.userId, 10),
+      this.getPreferences(),
+    ]);
+
+    return {
+      recentQuests,
+      goals: stringArrayPref(prefs['goals']),
+      availableMinutes: numberPref(prefs['availableMinutes'], 120),
+      difficultyPreference: (prefs['difficultyPreference'] as DifficultyPreference) ?? 'balanced',
+    };
   }
 
   private async appendEvent(

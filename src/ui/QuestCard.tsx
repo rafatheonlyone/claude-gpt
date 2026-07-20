@@ -1,26 +1,34 @@
 import { useState, useId } from 'react';
-import type { DashboardQuest } from '../../core/app/system-service';
-import { t } from '../../i18n';
+import type { DashboardQuest } from '../core/app/system-service';
+import { t, formatNumber } from '../i18n';
+import './ui.css';
 
 interface Props {
   readonly quest: DashboardQuest;
   readonly busy: boolean;
   readonly onAccept?: () => void;
   readonly onDecline?: () => void;
-  readonly onComplete?: (completion: number) => void;
+  readonly onPostpone?: () => void;
+  /** Opens the completion dialog; QuestCard never completes a quest directly. */
+  readonly onCompleteRequest?: () => void;
+  readonly onOpenDetail?: () => void;
 }
+
+const SETTLED_STATUSES = new Set(['completed', 'rejected', 'expired', 'postponed']);
 
 export function QuestCard({
   quest,
   busy,
   onAccept,
   onDecline,
-  onComplete,
+  onPostpone,
+  onCompleteRequest,
+  onOpenDetail,
 }: Props): React.ReactElement {
   const [showRationale, setShowRationale] = useState(false);
   const rationaleId = useId();
 
-  const settled = quest.status === 'completed' || quest.status === 'rejected';
+  const settled = SETTLED_STATUSES.has(quest.status);
 
   return (
     <article
@@ -50,25 +58,21 @@ export function QuestCard({
               </span>
             </>
           )}
-          {quest.status === 'accepted' && (
-            <span className="quest-card__badge quest-card__badge--accepted">
-              {t('quest.accepted')}
-            </span>
-          )}
-          {quest.status === 'completed' && (
-            <span className="quest-card__badge quest-card__badge--complete">
-              {t('quest.completedLabel')}
-              {quest.awardedXp !== null && (
-                <span className="numeric"> {t('quest.awarded', { xp: quest.awardedXp })}</span>
-              )}
-            </span>
-          )}
-          {quest.status === 'rejected' && (
-            <span className="quest-card__badge">{t('quest.declinedLabel')}</span>
-          )}
+          <span className="quest-card__badge" data-status={quest.status}>
+            {t(`quest.states.${quest.status}`)}
+            {quest.status === 'completed' && quest.awardedXp !== null && (
+              <span className="numeric"> {t('quest.awarded', { xp: formatNumber(quest.awardedXp) })}</span>
+            )}
+          </span>
         </div>
 
-        <h3 className="quest-card__title">{quest.title}</h3>
+        {onOpenDetail ? (
+          <button type="button" className="quest-card__title-button" onClick={onOpenDetail}>
+            <h3 className="quest-card__title">{quest.title}</h3>
+          </button>
+        ) : (
+          <h3 className="quest-card__title">{quest.title}</h3>
+        )}
         <p className="quest-card__description">{quest.description}</p>
 
         {quest.purpose && !settled && (
@@ -117,6 +121,9 @@ export function QuestCard({
                 >
                   {t('quest.accept')}
                 </button>
+                <button type="button" className="button" onClick={onPostpone} disabled={busy}>
+                  {t('quest.postpone')}
+                </button>
                 <button type="button" className="button" onClick={onDecline} disabled={busy}>
                   {t('quest.decline')}
                 </button>
@@ -124,25 +131,14 @@ export function QuestCard({
             )}
 
             {quest.status === 'accepted' && (
-              <>
-                <button
-                  type="button"
-                  className="button button--primary"
-                  onClick={() => onComplete?.(1)}
-                  disabled={busy}
-                >
-                  {t('quest.complete')}
-                </button>
-                {/* Partial completion is a first-class outcome, not a failure. */}
-                <button
-                  type="button"
-                  className="button"
-                  onClick={() => onComplete?.(0.5)}
-                  disabled={busy}
-                >
-                  {t('quest.completePartial')}
-                </button>
-              </>
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={onCompleteRequest}
+                disabled={busy}
+              >
+                {t('quest.complete')}
+              </button>
             )}
           </div>
         )}

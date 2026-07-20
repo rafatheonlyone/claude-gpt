@@ -5,6 +5,8 @@ import { Migrator } from './migrator';
 import { MigrationError, checksum } from './types';
 import type { Migration } from './types';
 import { MIGRATIONS, TARGET_SCHEMA_VERSION } from './migrations';
+import { migration001 } from './migrations/001_initial_schema';
+import { migration002 } from './migrations/002_quest_lifecycle';
 
 let storage: NodeSqliteAdapter;
 let clock: FixedClock;
@@ -144,6 +146,112 @@ describe('Migrator', () => {
   it('reports a healthy database after migrating', async () => {
     await new Migrator(storage, clock).migrate();
     expect(await storage.integrityCheck()).toBe('ok');
+  });
+});
+
+describe('migration 002 — quest lifecycle', () => {
+  /** Insert a minimal user + quest row using only migration 001's columns. */
+  async function seedLegacyQuest(): Promise<{ userId: string; questId: string }> {
+    const userId = 'user-legacy';
+    const questId = 'quest-legacy';
+    const now = clock.now().toISOString();
+
+    await storage.transaction([
+      { sql: 'INSERT INTO users (id, created_at, updated_at) VALUES (?, ?, ?)', params: [userId, now, now] },
+      {
+        sql: `INSERT INTO quests
+                (id, user_id, title, description, quest_type, domain, difficulty,
+                 status, due_date, source, evidence_level, created_at, updated_at)
+              VALUES (?, ?, 'Legacy quest', 'Written under schema v1', 'daily', 'academic',
+                      'light', 'accepted', '2026-07-19', 'rules', 'self_reported', ?, ?)`,
+        params: [questId, userId, now, now],
+      },
+    ]);
+
+    return { userId, questId };
+  }
+
+  it('applies on top of an existing v1 database and preserves its data', async () => {
+    // Exercises the real path an existing user's database takes: only
+    // migration 001 has ever run, then the app updates and migration 002
+    // becomes pending.
+    await new Migrator(storage, clock, [migration001]).migrate();
+    const { questId } = await seedLegacyQuest();
+
+    const report = await new Migrator(storage, clock, [migration001, migration002]).migrate();
+    expect(report.applied).toEqual([2]);
+
+    const rows = await storage.query('SELECT * FROM quests WHERE id = ?', [questId]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['title']).toBe('Legacy quest');
+    expect(rows[0]?.['status']).toBe('accepted');
+    // New columns exist and default to null rather than being dropped.
+    expect(rows[0]?.['presented_at']).toBeNull();
+    expect(rows[0]?.['reflection_note']).toBeNull();
+  });
+
+  it('accepts the new status values after migrating', async () => {
+    await new Migrator(storage, clock, [migration001, migration002]).migrate();
+    const userId = 'user-new';
+    await storage.execute('INSERT INTO users (id, created_at, updated_at) VALUES (?, ?, ?)', [
+      userId,
+      clock.now().toISOString(),
+      clock.now().toISOString(),
+    ]);
+
+    for (const status of ['detected', 'postponed']) {
+      await expect(
+        storage.execute(
+          `INSERT INTO quests
+             (id, user_id, title, description, quest_type, domain, difficulty,
+              status, source, evidence_level, created_at, updated_at)
+           VALUES (?, ?, 'Quest', 'Description', 'daily', 'academic', 'light',
+                   ?, 'rules', 'self_reported', ?, ?)`,
+          [`quest-${status}`, userId, status, clock.now().toISOString(), clock.now().toISOString()],
+        ),
+      ).resolves.toBeDefined();
+    }
+  });
+
+  it('still rejects an invalid status value', async () => {
+    await new Migrator(storage, clock, [migration001, migration002]).migrate();
+    await storage.execute('INSERT INTO users (id, created_at, updated_at) VALUES (?, ?, ?)', [
+      'user-x',
+      clock.now().toISOString(),
+      clock.now().toISOString(),
+    ]);
+
+    await expect(
+      storage.execute(
+        `INSERT INTO quests
+           (id, user_id, title, description, quest_type, domain, difficulty,
+            status, source, evidence_level, created_at, updated_at)
+         VALUES ('q', 'user-x', 'Quest', 'Description', 'daily', 'academic', 'light',
+                 'not_a_real_status', 'rules', 'self_reported', ?, ?)`,
+        [clock.now().toISOString(), clock.now().toISOString()],
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('leaves foreign keys intact after the table rebuild', async () => {
+    await new Migrator(storage, clock, [migration001]).migrate();
+    await seedLegacyQuest();
+    await new Migrator(storage, clock, [migration001, migration002]).migrate();
+
+    const violations = await storage.query('PRAGMA foreign_keys_check');
+    expect(violations).toHaveLength(0);
+    expect(await storage.integrityCheck()).toBe('ok');
+  });
+
+  it('recreates the indexes the application relies on', async () => {
+    await new Migrator(storage, clock, [migration001, migration002]).migrate();
+    const rows = await storage.query(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'quests'",
+    );
+    const names = rows.map((r) => String(r['name']));
+    expect(names).toContain('idx_quests_user_status');
+    expect(names).toContain('idx_quests_user_created');
+    expect(names).toContain('idx_quests_user_presented');
   });
 });
 

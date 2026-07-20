@@ -1,8 +1,11 @@
 import type { Domain } from '../domain/types';
 import type { Difficulty } from '../progression/xp';
-import { QUEST_TEMPLATES, type QuestTemplate } from './templates';
+import { QUEST_TEMPLATES, localizeTemplate, type QuestTemplate } from './templates';
 import { SeededRandom, dailySeed } from '../util/random';
 import { daysBetween } from '../platform/clock';
+import type { ContentLocale } from '../content-locale';
+import { DEFAULT_CONTENT_LOCALE } from '../content-locale';
+import { RATIONALE_PHRASES } from './rationale-i18n';
 
 /**
  * Deterministic quest generation (see `docs/AI_ARCHITECT.md` §3 and
@@ -45,6 +48,14 @@ export interface GenerationContext {
   readonly difficultyPreference: DifficultyPreference;
   /** How many quests to offer. */
   readonly count: number;
+  /** Language for generated titles, descriptions and rationale. Defaults to Portuguese (ADR-0007). */
+  readonly locale?: ContentLocale;
+  /**
+   * Extra seed material for a manual "recalibrate" reroll. Empty by default,
+   * so ordinary generation stays keyed only on user and date and never
+   * rerolls itself on a plain restart.
+   */
+  readonly seedSuffix?: string;
 }
 
 export interface GeneratedQuest {
@@ -77,14 +88,18 @@ const DIFFICULTY_ORDER: readonly Difficulty[] = [
 const NEGLECT_SATURATION_DAYS = 28;
 
 export function generateQuests(context: GenerationContext): GeneratedQuest[] {
-  const random = new SeededRandom(dailySeed(context.userId, context.date));
+  const locale = context.locale ?? DEFAULT_CONTENT_LOCALE;
+  const seed = context.seedSuffix
+    ? `${dailySeed(context.userId, context.date)}:${context.seedSuffix}`
+    : dailySeed(context.userId, context.date);
+  const random = new SeededRandom(seed);
 
   const eligible = QUEST_TEMPLATES.filter((template) => passesHardFilters(template, context));
 
   const scored = eligible
     .map((template) => ({
       template,
-      ...scoreTemplate(template, context),
+      ...scoreTemplate(template, context, locale),
     }))
     .sort((a, b) => b.score - a.score);
 
@@ -127,19 +142,22 @@ export function generateQuests(context: GenerationContext): GeneratedQuest[] {
     }
   }
 
-  return selected.map(({ template, score, reasons }) => ({
-    templateId: template.id,
-    title: template.title,
-    description: template.description,
-    purpose: template.purpose,
-    domain: template.domain,
-    questType: template.questType,
-    difficulty: calibrateDifficulty(template.difficulty, context),
-    estimatedMinutes: template.estimatedMinutes,
-    steps: template.steps,
-    rationale: reasons.join(' '),
-    score: Number(score.toFixed(4)),
-  }));
+  return selected.map(({ template, score, reasons }) => {
+    const content = localizeTemplate(template, locale);
+    return {
+      templateId: template.id,
+      title: content.title,
+      description: content.description,
+      purpose: content.purpose,
+      domain: template.domain,
+      questType: template.questType,
+      difficulty: calibrateDifficulty(template.difficulty, context),
+      estimatedMinutes: template.estimatedMinutes,
+      steps: content.steps,
+      rationale: reasons.join(' '),
+      score: Number(score.toFixed(4)),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -195,20 +213,24 @@ interface ScoreResult {
   readonly reasons: string[];
 }
 
-function scoreTemplate(template: QuestTemplate, context: GenerationContext): ScoreResult {
+function scoreTemplate(
+  template: QuestTemplate,
+  context: GenerationContext,
+  locale: ContentLocale,
+): ScoreResult {
   const reasons: string[] = [];
 
-  const goalAlignment = scoreGoalAlignment(template, context, reasons);
-  const neglect = scoreNeglect(template, context, reasons);
+  const goalAlignment = scoreGoalAlignment(template, context, reasons, locale);
+  const neglect = scoreNeglect(template, context, reasons, locale);
   const feasibility = scoreFeasibility(template, context);
   const difficultyFit = scoreDifficultyFit(template, context);
-  const variety = scoreVariety(template, context, reasons);
+  const variety = scoreVariety(template, context, reasons, locale);
 
   const score =
     0.35 * goalAlignment + 0.25 * neglect + 0.2 * feasibility + 0.1 * difficultyFit + 0.1 * variety;
 
   if (reasons.length === 0) {
-    reasons.push('Selected to keep your development broad.');
+    reasons.push(RATIONALE_PHRASES[locale].broadDevelopment);
   }
 
   return { score, reasons };
@@ -218,6 +240,7 @@ function scoreGoalAlignment(
   template: QuestTemplate,
   context: GenerationContext,
   reasons: string[],
+  locale: ContentLocale,
 ): number {
   if (context.goals.length === 0) return 0.5;
 
@@ -235,7 +258,7 @@ function scoreGoalAlignment(
   });
 
   if (matchedGoal) {
-    reasons.push(`Supports your ${matchedGoal.replace(/_/g, ' ')} goal.`);
+    reasons.push(RATIONALE_PHRASES[locale].supportsGoal(matchedGoal.replace(/_/g, ' ')));
   }
   return best;
 }
@@ -244,11 +267,13 @@ function scoreNeglect(
   template: QuestTemplate,
   context: GenerationContext,
   reasons: string[],
+  locale: ContentLocale,
 ): number {
   const lastActive = context.domainLastActive[template.domain];
+  const domainLabel = RATIONALE_PHRASES[locale].domainLabels[template.domain];
 
   if (lastActive === null || lastActive === undefined) {
-    reasons.push(`You have not recorded ${template.domain} work yet.`);
+    reasons.push(RATIONALE_PHRASES[locale].neverRecorded(domainLabel));
     return 1;
   }
 
@@ -257,7 +282,7 @@ function scoreNeglect(
 
   const ratio = Math.min(1, days / NEGLECT_SATURATION_DAYS);
   if (days >= 7) {
-    reasons.push(`${template.domain} has been quiet for ${days} days.`);
+    reasons.push(RATIONALE_PHRASES[locale].quietFor(domainLabel, days));
   }
   return ratio;
 }
@@ -297,6 +322,7 @@ function scoreVariety(
   template: QuestTemplate,
   context: GenerationContext,
   reasons: string[],
+  locale: ContentLocale,
 ): number {
   const recentIndex = context.recentTemplateIds.indexOf(template.id);
   if (recentIndex === -1) return 1;
@@ -304,7 +330,7 @@ function scoreVariety(
   // Most recent occurrence is penalised hardest, decaying with distance.
   const penalty = 1 / (1 + recentIndex);
   if (recentIndex < 2) {
-    reasons.push('Repeated deliberately — consistency matters here.');
+    reasons.push(RATIONALE_PHRASES[locale].repeatedDeliberately);
   }
   return 1 - penalty;
 }
