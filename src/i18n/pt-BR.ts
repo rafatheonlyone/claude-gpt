@@ -262,6 +262,7 @@ export const ptBR: Messages = {
       rejected: 'Recusada',
       postponed: 'Adiada',
       skipped: 'Ignorada',
+      archived: 'Arquivada',
     },
   },
 

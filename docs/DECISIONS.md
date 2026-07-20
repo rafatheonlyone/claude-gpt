@@ -298,6 +298,62 @@ This is the first React hook in the codebase covered by an automated test
 per-file via `@vitest-environment jsdom`) rather than only by manual verification — a small step
 against the "no end-to-end UI tests" gap recorded in `docs/TESTING.md`.
 
+## ADR-0013 — Query-scope consistency and closing the remaining duplicate-detection gaps
+
+**Status:** Accepted — 2026-07-20
+**Context:** After ADR-0010's repair ran against the real database (15 of 27 rows archived, as that
+ADR records), the live, relaunched application still showed 21 quests for the day, several of them
+visibly repeated. Investigation found three separate defects, all in code ADR-0010 introduced or
+described, none of them in the repair's row-level logic itself:
+
+1. `getQuestsForDate` — the query actually feeding `getDashboard()` (Home/Today) — had no `archived`
+   exclusion at all. `getAllQuests` (Missions) had been correctly fixed; Home/Today read a completely
+   different, unfixed query. `getRecentGeneratedQuests` (the Architect page) had the same gap. Three
+   surfaces, three independently-wrong ideas of "today's quests," none of them agreeing with the
+   repair that had already run.
+2. `findDuplicateGeneratedQuests` grouped only `detected`/`offered`/`postponed` rows against each
+   other. A group containing one `accepted` row and one `postponed` sibling of the same content
+   presented as a "group of one" among undecided statuses and was never flagged — visible live as two
+   "Problema de Olimpíada" cards, one in progress, one still adiada, surviving the first repair run.
+3. The same query excluded `expired` entirely, so two rows generated together, identical in every
+   respect, that both lapsed without ever being decided were permanently invisible to the repair —
+   found live as duplicate "Ball Handling Circuit," "Ship One Feature," and "Competition Problem"
+   cards in Missions' default view.
+
+Additionally, ADR-0010's own text claimed "the Missions 'Archived' grouping does this [reaches
+`archived` via an explicit filter]," but `QuestsPage`'s status filter `<select>` never actually listed
+`archived` as an option — the service-layer capability existed and was tested, but no user could reach
+it from the real UI.
+
+**Decision:**
+- `repositories.ts` gains named status-scope constants (`TODAY_STATUS_EXCLUSION`,
+  `BROWSING_STATUS_EXCLUSION`, `WORKLOAD_ELIGIBLE_STATUSES`, `STATUS_CINEMATIC_ELIGIBLE`,
+  `TEMPLATE_ACTIVE_STATUSES`) instead of inline string literals repeated per query, so "what counts as
+  visible where" has one definition per scope rather than one per call site.
+- A new `getVisibleQuestsForDate` (excludes only `archived`) replaces the unfiltered
+  `getQuestsForDate` as what `ensureTodayQuests` returns to callers; `getQuestsForDate` itself remains
+  for its two legitimate internal uses (existence checks, `recalibrateToday`'s full-history read),
+  which deliberately need `detected` rows still in flight. `getRecentGeneratedQuests` gained the same
+  `archived` exclusion.
+- `findDuplicateGeneratedQuests` now also queries `accepted`/`completed` rows to build a
+  decided-content map; any undecided sibling sharing that (template, due date) fingerprint is reported
+  as fully redundant regardless of group size. Its candidate-status set grew from
+  `detected/offered/postponed` to include `expired` — a lapsed duplicate is still a duplicate.
+- `QuestsPage`'s status filter gained an `archived` option (labelled "Arquivada"/"Archived" in both
+  locales), making ADR-0010's stated behaviour actually reachable.
+- `repairDuplicateQuests` now appends a `DuplicateQuestsRepaired` audit event (group-by-group, with
+  counts) to the existing append-only event log, in place of the prior one-off development script —
+  every repair run is now part of the same durable history as every other awarding/generation action,
+  and the Settings "Verificar / Arquivar duplicatas" UI is the only way to invoke it going forward.
+
+**Consequences:** Re-running the corrected repair against the real database (via the Settings UI, not
+a script) moved it from ADR-0010's 15 archived / 6 active to 19 archived / 5 active for the day plus 3
+distinct (formerly 6 duplicated) expired rows elsewhere — 27 total rows throughout, nothing deleted,
+nothing regenerated. A relaunch of the app after the repair reproduces the same corrected counts with
+no stale state and no re-duplication. Home, Today, Missions, the Architect page, the cinematic queue,
+and the notification badge now all read through the same small set of named scopes rather than five
+independently-maintained filters — the specific failure mode this ADR closes.
+
 ## ADR-0012 — Daily Protocol as a quest with first-class objectives, calibrated to a physical baseline
 
 **Status:** Accepted — 2026-07-20

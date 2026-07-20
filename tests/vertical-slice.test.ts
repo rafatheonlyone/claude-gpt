@@ -594,6 +594,280 @@ describe('duplicate quest repair', () => {
   });
 });
 
+describe('quest visibility after repair — regression for the real 21-quest bug', () => {
+  // Reproduces the exact shape found in a real development database: five
+  // distinct templates, over-generated to 21 total rows for one day by the
+  // concurrency race ADR-0009 fixed, repairing down to 15 archived + 6
+  // genuinely active (1 accepted, 5 postponed). The repair itself was
+  // already correct at the row level — this suite is about every OTHER
+  // query that assembles "today", which is what actually shipped the bug:
+  // `getDashboard` (Home/Today), `getRecentGeneratedQuests` (Architect),
+  // and `getPendingEncounters` (cinematic queue / notification badge) each
+  // had their own, differently-wrong idea of what counts as visible.
+  let db: NodeSqliteAdapter;
+  let platform2: TestPlatform;
+  let service2: SystemService;
+  let userId2: string;
+  const date = '2026-07-20';
+
+  interface TemplateShape {
+    readonly templateId: string;
+    readonly title: string;
+    readonly domain: string;
+    readonly minutes: number;
+    readonly archivedCount: number;
+    readonly keptStatus: 'accepted' | 'postponed';
+  }
+
+  const SHAPES: readonly TemplateShape[] = [
+    { templateId: 'academic.mistakes.review', title: 'Revisão de Erros', domain: 'academic', minutes: 40, archivedCount: 2, keptStatus: 'postponed' },
+    { templateId: 'technical.ship_feature', title: 'Entregue uma Funcionalidade', domain: 'technical', minutes: 90, archivedCount: 6, keptStatus: 'postponed' },
+    { templateId: 'phys.basketball.shooting_form', title: 'Sessão de Fundamento de Arremesso', domain: 'physical', minutes: 40, archivedCount: 2, keptStatus: 'postponed' },
+    { templateId: 'academic.competition_problem', title: 'Problema de Olimpíada', domain: 'academic', minutes: 60, archivedCount: 2, keptStatus: 'accepted' },
+    { templateId: 'phys.basketball.handling', title: 'Circuito de Manejo de Bola', domain: 'physical', minutes: 20, archivedCount: 3, keptStatus: 'postponed' },
+  ];
+
+  beforeEach(async () => {
+    db = new NodeSqliteAdapter(':memory:');
+    // Fixed to the fixture's `date` — the default test clock is 2026-07-19.
+    platform2 = createTestPlatform({ storage: db, now: new Date('2026-07-20T12:00:00Z') });
+    service2 = await SystemService.create(platform2);
+    await service2.completeOnboarding(onboarding);
+    userId2 = (await db.query('SELECT id FROM users LIMIT 1'))[0]?.['id'] as string;
+
+    // Wipe whatever onboarding itself generated so the fixture is exactly
+    // the 21 rows under test, not 21-plus-whatever-onboarding-added.
+    await db.execute('DELETE FROM quests WHERE user_id = ?', [userId2]);
+
+    // Repair only ever groups `detected`/`offered`/`postponed` rows (accepted
+    // quests are real decisions, excluded from grouping entirely). So an
+    // "accepted" kept status is a *separate* extra row alongside the
+    // postponed duplicate cluster, not a member of it — otherwise the
+    // cluster the repair actually sees would be one row short and archive
+    // one fewer than intended. This mirrors the real database exactly:
+    // "Problema de Olimpíada" had 4 total rows (1 accepted + 1 postponed +
+    // 2 archived), i.e. a 3-row postponed cluster plus one separate accepted row.
+    const now = platform2.clock.now().toISOString();
+    let counter = 0;
+    let tsOffset = 0;
+    const insertRow = async (shape: TemplateShape, status: string): Promise<void> => {
+      counter += 1;
+      tsOffset += 1;
+      await db.execute(
+        `INSERT INTO quests
+           (id, user_id, title, description, quest_type, domain, difficulty,
+            estimated_minutes, status, due_date, source, evidence_level,
+            created_at, updated_at, template_id)
+         VALUES (?, ?, ?, 'desc', 'daily', ?, 'moderate', ?, ?, ?, 'rules', 'self_reported', ?, ?, ?)`,
+        [
+          `quest-${counter}`,
+          userId2,
+          shape.title,
+          shape.domain,
+          shape.minutes,
+          status,
+          date,
+          `${now.slice(0, -4)}${String(10 + tsOffset).padStart(2, '0')}0Z`, // distinct, increasing timestamps
+          now,
+          shape.templateId,
+        ],
+      );
+    };
+
+    for (const shape of SHAPES) {
+      // The postponed cluster the repair will actually dedupe: archivedCount
+      // redundant copies plus one that survives as the kept row.
+      for (let i = 0; i < shape.archivedCount + 1; i += 1) {
+        await insertRow(shape, 'postponed');
+      }
+      // A real user decision, generated separately and never touched by repair.
+      if (shape.keptStatus === 'accepted') {
+        await insertRow(shape, 'accepted');
+      }
+    }
+  });
+
+  afterEach(async () => {
+    await db.close();
+  });
+
+  it('the fixture reproduces exactly 21 rows for the day before repair', async () => {
+    const rows = await db.query('SELECT id FROM quests WHERE user_id = ? AND due_date = ?', [userId2, date]);
+    expect(rows).toHaveLength(21);
+  });
+
+  it('1. repairing produces exactly the correct active count — 16 archived, 5 active', async () => {
+    const result = await service2.repairDuplicateQuests();
+    expect(result.totalRedundant).toBe(16);
+
+    const archived = await db.query(
+      "SELECT id FROM quests WHERE user_id = ? AND due_date = ? AND status = 'archived'",
+      [userId2, date],
+    );
+    expect(archived).toHaveLength(16);
+
+    const active = await db.query(
+      "SELECT id FROM quests WHERE user_id = ? AND due_date = ? AND status != 'archived'",
+      [userId2, date],
+    );
+    expect(active).toHaveLength(5);
+  });
+
+  it('2. archived records never appear in Today (getDashboard)', async () => {
+    await service2.repairDuplicateQuests();
+    const dashboard = await service2.getDashboard();
+    expect(dashboard.quests).toHaveLength(5);
+    for (const quest of dashboard.quests) {
+      expect(quest.status).not.toBe('archived');
+    }
+  });
+
+  it('3. archived records never contribute to daily minutes shown to the user', async () => {
+    await service2.repairDuplicateQuests();
+    const dashboard = await service2.getDashboard();
+    const totalMinutes = dashboard.quests.reduce((sum, q) => sum + (q.estimatedMinutes ?? 0), 0);
+    // The five visible rows: one kept-postponed copy per template that has
+    // no decided sibling (40 + 90 + 40 + 20), plus "Problema de Olimpíada"'s
+    // accepted row (60) — its own postponed siblings are now *all* archived,
+    // because the user already decided on this content (the fix this test
+    // exists for: a real database still showed a postponed "Problema de
+    // Olimpíada" sitting alongside the accepted one after the first repair).
+    expect(totalMinutes).toBe(40 + 90 + 40 + 20 + 60);
+    expect(totalMinutes).toBe(250); // matches the real repaired database exactly
+    expect(totalMinutes).toBeLessThan(1190); // the literal bug figure
+  });
+
+  it('4. archived records never enter the cinematic encounter queue', async () => {
+    await service2.repairDuplicateQuests();
+    const pending = await service2.getPendingEncounters();
+    for (const quest of pending) {
+      expect(quest.status).not.toBe('archived');
+    }
+    // None of the fixture rows are `detected` (all seeded as postponed/accepted),
+    // so the queue must be empty — archived or not.
+    expect(pending).toHaveLength(0);
+  });
+
+  it('5. archived records never contribute to the notification badge count', async () => {
+    await service2.repairDuplicateQuests();
+    // The badge (TopBar) reads the same getPendingEncounters() the encounter
+    // queue does — asserting the count directly here documents that
+    // dependency so the two can never silently diverge.
+    const pending = await service2.getPendingEncounters();
+    expect(pending.length).toBe(0);
+  });
+
+  it('6. Missions shows archived records only when the Archived filter is selected', async () => {
+    await service2.repairDuplicateQuests();
+    const defaultView = await service2.getAllQuests();
+    expect(defaultView.some((q) => q.status === 'archived')).toBe(false);
+
+    const archivedView = await service2.getAllQuests({ status: ['archived'] });
+    expect(archivedView).toHaveLength(16);
+    expect(archivedView.every((q) => q.status === 'archived')).toBe(true);
+  });
+
+  it('7. the repair runs against the active database and is idempotent', async () => {
+    const first = await service2.repairDuplicateQuests();
+    expect(first.totalRedundant).toBe(16);
+    const second = await service2.repairDuplicateQuests();
+    expect(second.totalRedundant).toBe(0);
+    const third = await service2.repairDuplicateQuests();
+    expect(third.totalRedundant).toBe(0);
+
+    const archived = await db.query(
+      "SELECT id FROM quests WHERE user_id = ? AND due_date = ? AND status = 'archived'",
+      [userId2, date],
+    );
+    expect(archived).toHaveLength(16); // never grows past the true redundant count
+  });
+
+  it('8. relaunch (a fresh service over the same database) restores the corrected state', async () => {
+    await service2.repairDuplicateQuests();
+    const restarted = await SystemService.create(
+      createTestPlatform({ storage: db, now: new Date('2026-07-20T12:00:00Z') }),
+    );
+    const dashboard = await restarted.getDashboard();
+    expect(dashboard.quests).toHaveLength(5);
+  });
+
+  it('9. recalibration does not recreate archived duplicates for the same day', async () => {
+    await service2.repairDuplicateQuests();
+    await service2.recalibrateToday();
+
+    // None of the five now-archived templates should have been proposed
+    // again as a fresh row for the same date.
+    for (const shape of SHAPES) {
+      const rows = await db.query(
+        `SELECT status FROM quests WHERE user_id = ? AND due_date = ? AND template_id = ?`,
+        [userId2, date, shape.templateId],
+      );
+      const nonArchived = rows.filter((r) => r['status'] !== 'archived');
+      // Exactly one originally-kept row remains non-archived per template —
+      // whether that row is a decided ("accepted") one or a kept-postponed
+      // one, recalibration must not have added a fresh live copy on top of it.
+      expect(nonArchived.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('10. the visible-today list and an independent raw count query agree', async () => {
+    await service2.repairDuplicateQuests();
+    const dashboard = await service2.getDashboard();
+
+    const raw = await db.query(
+      "SELECT COUNT(*) AS n FROM quests WHERE user_id = ? AND due_date = ? AND status != 'archived'",
+      [userId2, date],
+    );
+    expect(dashboard.quests.length).toBe(Number(raw[0]?.['n']));
+  });
+
+  // Found while manually re-verifying the fix against the real, live
+  // database: two "Ball Handling Circuit" rows and two "Ship One Feature"
+  // rows, identical title/due_date/created_at, both `status = 'expired'`,
+  // still showed as a pair in Missões' default (non-archived) view. The
+  // repair query above only ever considered `detected`/`offered`/`postponed`
+  // as archivable candidates, so a duplicate pair that lapsed before either
+  // copy was ever touched was invisible to it — the same "repeated entries"
+  // bug this whole regression suite exists for, just reached via a stale
+  // due date instead of an accepted sibling.
+  it('11. a duplicate pair that both expired without ever being decided is still repaired', async () => {
+    const now = platform2.clock.now().toISOString();
+    await db.execute(
+      `INSERT INTO quests
+         (id, user_id, title, description, quest_type, domain, difficulty,
+          estimated_minutes, status, due_date, source, evidence_level,
+          created_at, updated_at, template_id)
+       VALUES (?, ?, 'Ball Handling Circuit', 'desc', 'daily', 'physical', 'moderate',
+               20, 'expired', '2026-07-19', 'rules', 'self_reported', ?, ?, NULL)`,
+      ['quest-expired-1', userId2, now, now],
+    );
+    await db.execute(
+      `INSERT INTO quests
+         (id, user_id, title, description, quest_type, domain, difficulty,
+          estimated_minutes, status, due_date, source, evidence_level,
+          created_at, updated_at, template_id)
+       VALUES (?, ?, 'Ball Handling Circuit', 'desc', 'daily', 'physical', 'moderate',
+               20, 'expired', '2026-07-19', 'rules', 'self_reported', ?, ?, NULL)`,
+      ['quest-expired-2', userId2, now, now],
+    );
+
+    const result = await service2.repairDuplicateQuests();
+    expect(result.groups.some((g) => g.title === 'Ball Handling Circuit')).toBe(true);
+
+    const rows = await db.query(
+      "SELECT status FROM quests WHERE user_id = ? AND title = 'Ball Handling Circuit' AND due_date = '2026-07-19'",
+      [userId2],
+    );
+    const nonArchived = rows.filter((r) => r['status'] !== 'archived');
+    expect(nonArchived).toHaveLength(1);
+    expect(rows.filter((r) => r['status'] === 'archived')).toHaveLength(1);
+
+    const missionsDefaultView = await service2.getAllQuests();
+    const visibleCopies = missionsDefaultView.filter((q) => q.title === 'Ball Handling Circuit');
+    expect(visibleCopies).toHaveLength(1);
+  });
+});
+
 describe('Daily Protocol and objectives', () => {
   // These tests exercise the objective/calibration/persistence integration
   // directly rather than depending on the generator's competitive scoring

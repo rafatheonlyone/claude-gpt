@@ -263,6 +263,7 @@ export const en = {
       rejected: 'Declined',
       postponed: 'Postponed',
       skipped: 'Skipped',
+      archived: 'Archived',
     },
   },
 

@@ -5,6 +5,85 @@ the definition in `CLAUDE.md` — not when a placeholder exists.
 
 ---
 
+## 2026-07-20 — Query-scope consistency and duplicate-detection gaps (bugfix)
+
+A focused repair, not a new milestone: after the previous entry's duplicate
+repair ran, the real relaunched application still showed 21 quests for the
+day with visibly repeated entries. This entry documents why, and closes it
+for real. See ADR-0013 for the full architectural account.
+
+### Root causes (three, all downstream of the previous repair, none in it)
+
+- **`getQuestsForDate` — the query actually feeding Home/Today
+  (`getDashboard`) — had no `archived` exclusion at all.** `getAllQuests`
+  (Missions) had already been fixed to exclude `archived`; Home/Today read a
+  completely different, still-unfiltered query. `getRecentGeneratedQuests`
+  (the Architect page) had the same gap. Three surfaces, three different
+  ideas of "today's quests," none agreeing with the repair that had already
+  run against the database. This alone fully explains the reported "still 21
+  quests" — the row-level repair was correct; nothing downstream of it was.
+- **`findDuplicateGeneratedQuests` never considered an already-`accepted`
+  sibling.** A group with one `accepted` row and one `postponed` row of
+  identical content presented as a "group of one" among undecided statuses
+  and was silently skipped. Confirmed live: two "Problema de Olimpíada"
+  cards, one in progress, one still adiada, both surviving the first repair.
+- **The same query excluded `expired` entirely.** Two rows generated
+  together, identical in every respect, that both lapsed without ever being
+  decided were invisible to it. Confirmed live: duplicate "Ball Handling
+  Circuit," "Ship One Feature," and "Competition Problem" cards in Missions.
+
+### The fix
+
+- `src/core/app/repositories.ts`: named status-scope constants
+  (`TODAY_STATUS_EXCLUSION`, `BROWSING_STATUS_EXCLUSION`,
+  `WORKLOAD_ELIGIBLE_STATUSES`, `STATUS_CINEMATIC_ELIGIBLE`,
+  `TEMPLATE_ACTIVE_STATUSES`) replace inline string literals repeated per
+  query. A new `getVisibleQuestsForDate` (excludes only `archived`) is what
+  `ensureTodayQuests` now returns; `getRecentGeneratedQuests` gained the same
+  exclusion. `findDuplicateGeneratedQuests` now cross-references
+  `accepted`/`completed` rows so an undecided sibling of a decided quest is
+  always reported as redundant, and its candidate-status set grew to include
+  `expired`.
+- `src/features/quests/QuestsPage.tsx` and both locale files: the Missions
+  status filter gained an `archived` option ("Arquivada"/"Archived") — the
+  previous ADR's text claimed this was already reachable; the service layer
+  supported it and was tested, but the dropdown never actually listed it.
+- `repairDuplicateQuests` now writes a `DuplicateQuestsRepaired` event to the
+  existing append-only event log on every run that archives something — a
+  real audit trail in place of the one-off development script the previous
+  repair used. The Settings "Verificar/Arquivar duplicatas" action is the
+  only way to invoke it going forward.
+- New regression coverage in `tests/vertical-slice.test.ts`: an 11-test
+  `describe` block reproducing the exact real-database shape (5 templates,
+  21 rows, the accepted-sibling case, and a dedicated case for a pair that
+  both expired without ever being decided), asserting archived records never
+  reach Today, workload, the cinematic queue, or the notification badge; that
+  Missions shows them only via the explicit filter; that the repair is
+  idempotent; and that relaunch and recalibration never resurrect them.
+
+### Real-database verification
+
+Verified against `C:\Users\rafin\AppData\Roaming\dev.system.app\system.db`
+directly (SQLite queries) and through the live, cold-relaunched application
+(Windows UI Automation driving real navigation and the real Settings action —
+not a script): before this fix, 27 total rows (15 archived, 6 active for the
+day, 6 expired-but-duplicated elsewhere). Running the corrected repair
+through the Settings UI moved this to 19 archived, 5 genuinely active for the
+day (250 minutes, matching the UI), and 3 distinct (no longer duplicated)
+expired rows — 27 total throughout, nothing deleted, nothing regenerated.
+Re-running the check afterward reports "Nenhuma duplicata encontrada." Two
+full cold restarts (killing and relaunching the whole `tauri:dev` process
+tree, not relying on Vite HMR) reproduced the same corrected counts with no
+stale state. Selecting the new "Arquivada" filter in Missions surfaces
+exactly 19 rows, matching the database exactly.
+
+### Validation
+
+`npm run typecheck`, `lint` (zero warnings), `test` (259 tests across 11
+files, up from 247), `build`, and `cargo build` all pass.
+
+---
+
 ## 2026-07-20 — Adaptive quest engine, Daily Protocols, generation integrity
 
 Triggered by inspecting the real application and its real database rather than

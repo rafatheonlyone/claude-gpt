@@ -72,13 +72,22 @@ cause a quest to be re-presented as new. `presented_at` is stamped exactly once,
 quest is shown, whichever path shows it (the encounter or opening its detail view directly).
 `postponed` is distinct from `rejected`: the quest is retained, not discarded, recording that the
 user meant to decide later. `archived` is distinct from both: it marks a redundant generated
-duplicate found by the repair flow below, retained (never deleted) but excluded from the default
-browsable list. `reflection_note` and `evidence_note` are free-text columns captured at completion —
-a deliberately small subset of the full structured evidence system described above, scoped to the
-mastery milestone (D-1/D-2) where evidence becomes load-bearing rather than optional colour.
-`template_id` (migration 003) records which template generated the quest; because generation is
-entirely template-based, this doubles as a deterministic duplicate fingerprint (ADR-0010) — no
-similarity heuristic is needed.
+duplicate found by the repair flow below, retained (never deleted) and excluded, by construction, from
+every active-quest query in the app — Home/Today (`getVisibleQuestsForDate`), Missions' default view
+(`getAllQuests`), the Architect page (`getRecentGeneratedQuests`), the daily workload total, the
+cinematic encounter queue, and the notification badge all read through a small set of named status
+scopes defined once in `repositories.ts` rather than duplicating the exclusion per query (ADR-0013 —
+written after `archived` rows leaked into several of these because the exclusion had only been applied
+to some of them). Missions' status filter can still reach `archived` explicitly ("Arquivada"), which is
+the only UI path to it. `reflection_note` and `evidence_note` are free-text columns captured at
+completion — a deliberately small subset of the full structured evidence system described above,
+scoped to the mastery milestone (D-1/D-2) where evidence becomes load-bearing rather than optional
+colour. `template_id` (migration 003) records which template generated the quest; because generation
+is entirely template-based, this doubles as a deterministic duplicate fingerprint (ADR-0010) — no
+similarity heuristic is needed. The fingerprint used for duplicate detection considers an
+already-`accepted`/`completed` row as decisive over any undecided sibling of the same content, and
+treats a lapsed (`expired`) duplicate the same as an undecided one — both were gaps in the original
+repair, closed in ADR-0013.
 
 **Generation integrity (migration 003, ADR-0009).** `daily_generation_locks` (`user_id`, `date`) is a
 pure concurrency primitive: its row's existence is the lock itself, claimed with `INSERT OR IGNORE`

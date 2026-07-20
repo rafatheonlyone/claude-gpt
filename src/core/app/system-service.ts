@@ -344,6 +344,8 @@ export class SystemService {
 
   /**
    * Expires overdue quests and generates today's set if none exist yet.
+   * Returns only what should actually be visible today — see
+   * `Repositories.getVisibleQuestsForDate`.
    *
    * Shared by `getDashboard` and `getPendingEncounters` so the encounter
    * queue works correctly regardless of which page happens to mount first —
@@ -358,32 +360,38 @@ export class SystemService {
    * this race. Only the caller whose `INSERT OR IGNORE` actually inserts the
    * lock row proceeds to generate; everyone else waits briefly for that
    * quest to land rather than generating a second independent batch.
+   *
+   * The existence check below deliberately uses the *unfiltered*
+   * `getQuestsForDate` (every status, including `detected` and `archived`),
+   * not `getVisibleQuestsForDate` — "has today already been generated" and
+   * "what should the user see" are different questions (ADR-0013). Using the
+   * visible-only count here would have been wrong in the other direction: a
+   * day whose only quests happened to be `detected` would look empty and
+   * regenerate on every call.
    */
   private async ensureTodayQuests(date: string): Promise<QuestRecord[]> {
     const now = this.platform.clock.now().toISOString();
     await this.repos.expireStaleQuests(this.userId, date, now);
 
-    let quests = await this.repos.getQuestsForDate(this.userId, date);
-    if (quests.length === 0) {
+    const existing = await this.repos.getQuestsForDate(this.userId, date);
+    if (existing.length === 0) {
       const wonRace = await this.repos.tryAcquireGenerationLock(this.userId, date, now);
       if (wonRace) {
         await this.generateForDate(date);
-        quests = await this.repos.getQuestsForDate(this.userId, date);
       } else {
-        quests = await this.waitForConcurrentGeneration(date);
+        await this.waitForConcurrentGeneration(date);
       }
     }
-    return quests;
+    return this.repos.getVisibleQuestsForDate(this.userId, date);
   }
 
   /** Polls briefly for another in-flight generation call to land, rather than flashing an empty day. */
-  private async waitForConcurrentGeneration(date: string): Promise<QuestRecord[]> {
+  private async waitForConcurrentGeneration(date: string): Promise<void> {
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const quests = await this.repos.getQuestsForDate(this.userId, date);
-      if (quests.length > 0) return quests;
+      const existing = await this.repos.getQuestsForDate(this.userId, date);
+      if (existing.length > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    return this.repos.getQuestsForDate(this.userId, date);
   }
 
   private async withSteps(quests: readonly QuestRecord[]): Promise<DashboardQuest[]> {
@@ -400,12 +408,19 @@ export class SystemService {
 
   private async generateForDate(date: string, seedSuffix = ''): Promise<void> {
     const [prefs, locale] = await Promise.all([this.getPreferences(), this.getLocalePreference()]);
-    const [domainLastActive, recentTemplateIds, committed, activeTemplateIds] = await Promise.all([
-      this.repos.getDomainLastActive(this.userId),
-      this.repos.recentTemplateIds(this.userId),
-      this.repos.getCommittedWorkload(this.userId, date),
-      this.repos.getActiveTemplateIds(this.userId),
-    ]);
+    const [domainLastActive, recentTemplateIds, committed, activeTemplateIds, archivedTodayTemplateIds] =
+      await Promise.all([
+        this.repos.getDomainLastActive(this.userId),
+        this.repos.recentTemplateIds(this.userId),
+        this.repos.getCommittedWorkload(this.userId, date),
+        this.repos.getActiveTemplateIds(this.userId),
+        // Scoped to *this date only* (ADR-0013): a template archived today as
+        // a redundant duplicate must not be immediately re-proposed by the
+        // same or a later generation call the same day — recalibrating must
+        // not recreate the exact duplicate it (or an earlier repair) just
+        // removed. A `repeatable` template stays eligible on a future day.
+        this.repos.getArchivedTemplateIdsForDate(this.userId, date),
+      ]);
 
     const availableMinutes = numberPref(prefs['availableMinutes'], 120);
     const recoveryState = 'unknown' as RecoveryState;
@@ -424,7 +439,7 @@ export class SystemService {
       goals: stringArrayPref(prefs['goals']),
       domainLastActive,
       recentTemplateIds,
-      excludedTemplateIds: [...activeTemplateIds],
+      excludedTemplateIds: [...new Set([...activeTemplateIds, ...archivedTodayTemplateIds])],
       completionRateByDomain: {},
       excludedDomains: stringArrayPref(prefs['excludedDomains']) as Domain[],
       injuredAreas: stringArrayPref(prefs['injuredAreas']),
@@ -632,6 +647,13 @@ export class SystemService {
    */
   async recalibrateToday(): Promise<RecalibrationResult> {
     const date = this.platform.clock.today();
+    // Deliberately the unfiltered scope (ADR-0013): recalibration must still
+    // be able to see and remove `detected`/`offered` rows. `archived` rows
+    // pass through `removable`'s filter untouched either way, and because
+    // they are never added or removed here, they contribute identically to
+    // `current.length` and the later re-query, cancelling out of `added`
+    // exactly — the externally-reported counts stay correct even though this
+    // intermediate list is not visibility-filtered.
     const current = await this.repos.getQuestsForDate(this.userId, date);
     const removable = current.filter((q) => q.status === 'detected' || q.status === 'offered');
 
@@ -679,6 +701,14 @@ export class SystemService {
    * and its full history rather than deleting it. Accepted, completed,
    * rejected, expired and user-created quests are never candidates — see
    * `Repositories.findDuplicateGeneratedQuests`.
+   *
+   * Idempotent by construction: `findDuplicateGeneratedQuests` only reports
+   * `detected`/`offered`/`postponed` rows, so an already-archived row can
+   * never be re-selected on a second run, and a run that finds nothing
+   * writes nothing. Each run that actually archives something is recorded
+   * as a `DuplicateQuestsRepaired` event (append-only, like every other
+   * awarding/generation action) — a real audit trail of when and how much
+   * was repaired, in place of a one-off development script.
    */
   async repairDuplicateQuests(): Promise<DuplicateRepairPreview> {
     const preview = await this.previewDuplicateQuestRepair();
@@ -686,6 +716,19 @@ export class SystemService {
     if (redundantIds.length > 0) {
       const now = this.platform.clock.now().toISOString();
       await this.repos.archiveQuests(redundantIds, now);
+      await this.appendEvent(
+        'DuplicateQuestsRepaired',
+        {
+          archivedCount: redundantIds.length,
+          groups: preview.groups.map((group) => ({
+            templateId: group.templateId,
+            dueDate: group.dueDate,
+            keptId: group.keepId,
+            archivedIds: group.redundantIds,
+          })),
+        },
+        'system',
+      );
     }
     return preview;
   }

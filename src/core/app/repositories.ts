@@ -96,6 +96,47 @@ const QUEST_COLUMNS = `id, title, description, purpose, domain, quest_type, diff
               created_at, presented_at, postponed_at, completed_at, reflection_note, evidence_note,
               template_id`;
 
+/**
+ * Quest visibility scopes (ADR-0013).
+ *
+ * A real database inspected after ADR-0009/0010 shipped showed the repair had
+ * worked exactly as designed at the row level — 15 of 21 duplicates correctly
+ * archived — while the running application still displayed "21 quests" for
+ * the day. The cause was that `archived` had been added as a status value,
+ * and `getAllQuests` had been taught to exclude it, but the *other* two
+ * queries that assemble "today" — `getQuestsForDate` (feeds `getDashboard`,
+ * i.e. Home and Today) and `getRecentGeneratedQuests` (feeds the Architect
+ * page) — were never touched, because nothing forced every quest-visibility
+ * query to agree on what "visible" means. These constants are that single
+ * source of truth: every method below that decides what the user sees
+ * builds its `WHERE` clause from one of these, so a new status value or a
+ * new query can never again silently diverge from the others.
+ *
+ * Two exclusion sets exist, deliberately different: `TODAY_STATUS_EXCLUSION`
+ * (Home/Today) hides only `archived` — a freshly generated `detected` quest
+ * is still genuinely "today's", simply not yet walked through the cinematic
+ * encounter, and the existing test suite already encodes that a user (or a
+ * test acting as one) can accept a quest the moment it is generated, before
+ * any explicit presentation step. `BROWSING_STATUS_EXCLUSION` (Missions, via
+ * `getAllQuests`) hides both `detected` *and* `archived` — Missions is the
+ * long-term browsable record, where a not-yet-decided quest belongs
+ * exclusively in the cinematic queue until presented (unchanged from ADR-0010).
+ */
+/** Never part of any user-facing list — a repair artefact, not a decision. */
+const STATUS_ARCHIVED = 'archived';
+/** Pre-encounter — belongs exclusively to the cinematic queue until presented. */
+const STATUS_DETECTED = 'detected';
+/** "visibleToday": Home and Today. A repair artefact is never "today's quests". */
+const TODAY_STATUS_EXCLUSION = `status != '${STATUS_ARCHIVED}'`;
+/** General browsing (Missions' default view): pre-encounter and repair artefacts both hidden. */
+const BROWSING_STATUS_EXCLUSION = `status NOT IN ('${STATUS_DETECTED}', '${STATUS_ARCHIVED}')`;
+/** "workloadEligible": quests that actually occupy a day's effort budget. */
+const WORKLOAD_ELIGIBLE_STATUSES = ['accepted', 'postponed', 'completed'] as const;
+/** "cinematicEligible" / "notificationEligible": awaiting the encounter, nothing else ever qualifies. */
+const STATUS_CINEMATIC_ELIGIBLE = STATUS_DETECTED;
+/** A template is still "live" (and must not be proposed again) in any of these states. */
+const TEMPLATE_ACTIVE_STATUSES = ['detected', 'offered', 'accepted', 'postponed'] as const;
+
 const asString = (value: unknown): string => String(value ?? '');
 const asNumber = (value: unknown): number => Number(value ?? 0);
 const asNullableString = (value: unknown): string | null =>
@@ -295,6 +336,16 @@ export class Repositories {
 
   // ----------------------------------------------------------------- quests
 
+  /**
+   * Every quest generated for a date, in every status, including `detected`
+   * (not yet presented) and `archived` (repair artefacts). This is
+   * deliberately unfiltered — it answers "has anything at all happened for
+   * this date", not "what should the user see" — and exists only for two
+   * internal callers that genuinely need that: the generation-idempotency
+   * check in `ensureTodayQuests`, and `recalibrateToday`, which must still
+   * be able to find `detected`/`offered` rows to remove. Anything that
+   * renders quests to the user must use `getVisibleQuestsForDate` instead.
+   */
   async getQuestsForDate(userId: string, date: string): Promise<QuestRecord[]> {
     const rows = await this.db.query(
       `SELECT ${QUEST_COLUMNS} FROM quests WHERE user_id = ? AND due_date = ? ORDER BY created_at`,
@@ -304,8 +355,31 @@ export class Repositories {
   }
 
   /**
-   * The full quest list, excluding `detected` quests — those are pre-encounter
-   * and belong exclusively to the cinematic queue, never to a browsable list.
+   * "visibleToday": what Home and Today actually display. Excludes only
+   * `archived` (a duplicate-repair outcome, not a quest to act on today) —
+   * a `detected` quest is still genuinely today's, simply not yet walked
+   * through the cinematic encounter. This is the fix for the "still shows
+   * 21 quests" bug: `getDashboard` previously called the unfiltered
+   * `getQuestsForDate` directly, so 15 archived duplicates plus 1 accepted
+   * plus 5 postponed all counted as "today" even though the repair had
+   * correctly archived them at the row level.
+   */
+  async getVisibleQuestsForDate(userId: string, date: string): Promise<QuestRecord[]> {
+    const rows = await this.db.query(
+      `SELECT ${QUEST_COLUMNS} FROM quests
+        WHERE user_id = ? AND due_date = ? AND ${TODAY_STATUS_EXCLUSION}
+        ORDER BY created_at`,
+      [userId, date],
+    );
+    return rows.map(toQuestRecord);
+  }
+
+  /**
+   * The full quest list, excluding `detected` and `archived` by default (see
+   * `BROWSING_STATUS_EXCLUSION`) — those are pre-encounter and repair
+   * artefacts respectively, never a browsable list. An explicit status
+   * filter can still ask for either — the Missions "Archived" group does
+   * exactly that.
    */
   async getAllQuests(userId: string, filter: QuestListFilter = {}): Promise<QuestRecord[]> {
     const clauses: string[] = ['user_id = ?'];
@@ -315,11 +389,7 @@ export class Repositories {
       clauses.push(`status IN (${filter.status.map(() => '?').join(', ')})`);
       params.push(...filter.status);
     } else {
-      // Default browsing view: `detected` is pre-encounter (belongs only to
-      // the cinematic queue) and `archived` is a duplicate-repair outcome,
-      // not something to browse day to day. An explicit status filter can
-      // still ask for either — the Missions "Archived" group does exactly that.
-      clauses.push("status NOT IN ('detected', 'archived')");
+      clauses.push(BROWSING_STATUS_EXCLUSION);
     }
     if (filter.domain) {
       clauses.push('domain = ?');
@@ -337,20 +407,22 @@ export class Repositories {
     return rows.map(toQuestRecord);
   }
 
+  /** "cinematicEligible" / "notificationEligible": the encounter queue and the top-bar badge both read this. */
   async getPendingEncounters(userId: string): Promise<QuestRecord[]> {
     const rows = await this.db.query(
-      `SELECT ${QUEST_COLUMNS} FROM quests WHERE user_id = ? AND status = 'detected' ORDER BY created_at`,
-      [userId],
+      `SELECT ${QUEST_COLUMNS} FROM quests WHERE user_id = ? AND status = ? ORDER BY created_at`,
+      [userId, STATUS_CINEMATIC_ELIGIBLE],
     );
     return rows.map(toQuestRecord);
   }
 
+  /** The Architect's "recent quests" feed. Excludes `archived` — a repair artefact is never a suggestion. */
   async getRecentGeneratedQuests(userId: string, limit = 10): Promise<QuestRecord[]> {
     const rows = await this.db.query(
       `SELECT ${QUEST_COLUMNS} FROM quests
-        WHERE user_id = ? AND source = 'rules'
+        WHERE user_id = ? AND source = 'rules' AND status != ?
         ORDER BY created_at DESC LIMIT ?`,
-      [userId, limit],
+      [userId, STATUS_ARCHIVED, limit],
     );
     return rows.map(toQuestRecord);
   }
@@ -476,14 +548,16 @@ export class Repositories {
    * the primary/demanding counts, matching the mandatory-vs-optional split
    * the workload budget uses.
    */
+  /** "workloadEligible": the only statuses that occupy a day's effort budget. */
   async getCommittedWorkload(
     userId: string,
     date: string,
   ): Promise<{ minutes: number; primaryCount: number; demandingOrAbove: boolean }> {
+    const placeholders = WORKLOAD_ELIGIBLE_STATUSES.map(() => '?').join(', ');
     const rows = await this.db.query(
       `SELECT quest_type, difficulty, estimated_minutes FROM quests
-        WHERE user_id = ? AND due_date = ? AND status IN ('accepted','postponed','completed')`,
-      [userId, date],
+        WHERE user_id = ? AND due_date = ? AND status IN (${placeholders})`,
+      [userId, date, ...WORKLOAD_ELIGIBLE_STATUSES],
     );
     let minutes = 0;
     let primaryCount = 0;
@@ -587,11 +661,29 @@ export class Repositories {
    * the same generated content by construction.
    */
   async getActiveTemplateIds(userId: string): Promise<Set<string>> {
+    const placeholders = TEMPLATE_ACTIVE_STATUSES.map(() => '?').join(', ');
     const rows = await this.db.query(
       `SELECT DISTINCT template_id FROM quests
         WHERE user_id = ? AND template_id IS NOT NULL
-          AND status IN ('detected','offered','accepted','postponed')`,
-      [userId],
+          AND status IN (${placeholders})`,
+      [userId, ...TEMPLATE_ACTIVE_STATUSES],
+    );
+    return new Set(rows.map((r) => asString(r['template_id'])).filter((id) => id.length > 0));
+  }
+
+  /**
+   * Template ids already archived *for this specific date* — i.e. already
+   * proven redundant today by the repair flow. Excluding these from a same-day
+   * regeneration is what stops recalibration from immediately recreating the
+   * duplicate it (or an earlier repair) just removed. Deliberately scoped to
+   * the date, not global: a `repeatable` template that was archived today
+   * must still be proposable on a future day.
+   */
+  async getArchivedTemplateIdsForDate(userId: string, date: string): Promise<Set<string>> {
+    const rows = await this.db.query(
+      `SELECT DISTINCT template_id FROM quests
+        WHERE user_id = ? AND due_date = ? AND template_id IS NOT NULL AND status = ?`,
+      [userId, date, STATUS_ARCHIVED],
     );
     return new Set(rows.map((r) => asString(r['template_id'])).filter((id) => id.length > 0));
   }
@@ -613,10 +705,37 @@ export class Repositories {
   async findDuplicateGeneratedQuests(userId: string): Promise<
     Array<{ templateId: string; dueDate: string | null; title: string; keepId: string; redundantIds: string[] }>
   > {
+    // Real decisions the user already made. A `detected`/`offered`/`postponed`
+    // sibling of one of these is not "one candidate among several equal
+    // ones" — it is fully redundant, because the user already accepted or
+    // completed the identical content. Without this, a duplicate group with
+    // one accepted member and one postponed member was previously invisible
+    // to the query below entirely (a "group of one" among undecided
+    // statuses only), and the postponed copy sat there forever, looking
+    // exactly like the still-repeated-entry bug it was supposed to fix.
+    const decidedRows = await this.db.query(
+      `SELECT id, template_id, due_date, title FROM quests
+        WHERE user_id = ? AND source = 'rules' AND status IN ('accepted','completed')`,
+      [userId],
+    );
+    const decidedKeepId = new Map<string, string>();
+    for (const row of decidedRows) {
+      const fingerprint = asNullableString(row['template_id']) ?? `title:${asString(row['title'])}`;
+      const key = `${fingerprint}::${asNullableString(row['due_date']) ?? ''}`;
+      // Any one decided id represents the group faithfully for reporting —
+      // it is never archived either way, so which one is arbitrary.
+      if (!decidedKeepId.has(key)) decidedKeepId.set(key, asString(row['id']));
+    }
+
+    // `expired` is included alongside the still-open statuses: a duplicate
+    // that was never decided doesn't stop being a repair artefact just
+    // because its due date passed. Two identical rows generated together
+    // and left untouched are exactly the redundant-record case this repair
+    // exists for, whether they lapsed or not.
     const rows = await this.db.query(
       `SELECT id, template_id, due_date, title, created_at FROM quests
         WHERE user_id = ? AND source = 'rules'
-          AND status IN ('detected','offered','postponed')
+          AND status IN ('detected','offered','postponed','expired')
         ORDER BY due_date, created_at DESC`,
       [userId],
     );
@@ -650,7 +769,20 @@ export class Repositories {
       keepId: string;
       redundantIds: string[];
     }> = [];
-    for (const group of groups.values()) {
+    for (const [key, group] of groups) {
+      const decidedId = decidedKeepId.get(key);
+      if (decidedId) {
+        // Every undecided sibling is redundant — the real keeper already
+        // exists, decided, outside this query entirely.
+        duplicates.push({
+          templateId: group.templateId,
+          dueDate: group.dueDate,
+          title: group.title,
+          keepId: decidedId,
+          redundantIds: group.ids,
+        });
+        continue;
+      }
       if (group.ids.length <= 1) continue;
       // Rows arrived ordered newest-first within each group (created_at DESC).
       const [keepId, ...redundantIds] = group.ids;

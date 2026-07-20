@@ -27,7 +27,7 @@ const DOMAINS: readonly Domain[] = [
   'recovery',
 ];
 
-const STATUSES = ['offered', 'accepted', 'completed', 'rejected', 'postponed', 'expired'];
+const STATUSES = ['offered', 'accepted', 'completed', 'rejected', 'postponed', 'expired', 'archived'];
 
 export function QuestsPage(): React.ReactElement {
   const { service } = useSystem();

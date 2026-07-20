@@ -2,11 +2,14 @@
 
 **Updated:** 2026-07-20
 **Schema version:** 5
-**Tests:** 247 passing (11 files)
+**Tests:** 259 passing (11 files)
 **Build:** ✅ typecheck, lint (zero warnings), test, `vite build`, `cargo build` all pass
-**Desktop app:** ✅ launched via `npm run tauri:dev` against the real (previously
-buggy, now repaired) development database; window captured directly
-(`PrintWindow`) to confirm the rendered result against production `rusqlite`
+**Desktop app:** ✅ launched (cold-restarted three times, to rule out stale
+state) via `npm run tauri:dev` against the real development database; driven
+with Windows UI Automation (sidebar navigation, the Settings maintenance
+action, the Missions status filter) and screenshotted directly (`PrintWindow`)
+to confirm the rendered result against production `rusqlite`, not just the
+test suite
 
 This document describes what **actually works**, not what is planned. A feature
 appears under "Working" only if a user can reach it and it persists correctly.
@@ -36,7 +39,8 @@ state restored → settings change → restart → restored.**
 | **Daily workload budget**      | ✅     | Real function of available time, recovery, and what the day already committed to — never a fixed count added blindly (ADR-0009). 11 tests |
 | **Generation concurrency safety** | ✅ | `daily_generation_locks` makes `ensureTodayQuests` idempotent across racing callers — fixes a real bug that produced 21 quests/1,190 minutes for one day. Regression test verified to fail without the fix |
 | **Hard duplicate exclusion**   | ✅     | Template id as a deterministic content fingerprint; a template already active is removed from candidates, not down-ranked (ADR-0010) |
-| **Duplicate repair**           | ✅     | Preview-then-archive maintenance flow in Settings; never deletes, never touches accepted/completed/user quests. Fixed 21 pre-existing duplicates in the real dev database |
+| **Duplicate repair**           | ✅     | Preview-then-archive maintenance flow in Settings, invoked as the one legitimate repair path (not a one-off script), audit-logged. Now also catches an already-decided sibling and lapsed (`expired`) duplicates, not just undecided ones (ADR-0013). Real database: 19 archived, 5 genuinely active for the day, 3 distinct (formerly 6 duplicated) expired rows elsewhere — verified idempotent and stable across a cold relaunch |
+| **Query-scope consistency**    | ✅     | Home/Today, Missions, the Architect page, the cinematic queue, and the notification badge all read through the same small set of named status scopes (`getVisibleQuestsForDate`, `BROWSING_STATUS_EXCLUSION`, etc.) instead of five independently-maintained filters — closes the gap where the repair ran correctly but Home/Today still queried unfiltered rows (ADR-0013) |
 | **Daily Protocol + objectives** | ✅    | First-class, independently-progressable objectives on any quest; physical targets calibrated to 80% of an editable baseline, never a fixed extreme (ADR-0012) |
 | **Physical baseline**          | ✅     | Editable in Settings at any time; push-ups/squats/plank/frequency, each independently optional |
 | Achievements                   | ✅     | 16 definitions, evaluation engine, presentation ordering, localized                                |
@@ -46,7 +50,7 @@ state restored → settings change → restart → restored.**
 | **Multi-page shell**           | ✅     | Sidebar + top bar + 7 routed pages; collapse state persists; fully keyboard reachable              |
 | **Central de Comando (Home)**  | ✅     | Priority quest, progression, today's count, recent achievement, Architect entry point              |
 | **Hoje (Today)**               | ✅     | Filterable quest list (all/active/available/completed), daily progress bar                        |
-| **Missões (Quests)**           | ✅     | Search, domain/status filters, sort, master-detail with routed quest IDs, objective checklist in detail |
+| **Missões (Quests)**           | ✅     | Search, domain/status filters (including "Arquivada", newly reachable — the repository supported it, the dropdown didn't list it until now), sort, master-detail with routed quest IDs, objective checklist in detail |
 | **Status**                     | ✅     | Level, rank, XP, age (derived, never stored), domains breakdown                                    |
 | **Conquistas (Achievements)**  | ✅     | Tabs, search, secret-achievement redaction until unlocked                                          |
 | **Arquiteto (Architect)**      | ✅     | Current recommendation, recent quests, recalibrate action, offline/privacy statement (no AI wired) |
@@ -122,14 +126,16 @@ Each is tracked in `ROADMAP.md`.
 6. **Onboarding is not resumable across restarts.** Answers are held in component
    state until activation. The `onboarding_responses` table exists for this but
    is not yet written to.
-7. **Full interactive desktop click-through was not performed this session either.**
-   The app was launched twice, confirmed live and correctly rendered against the
-   real (bug-fixed and repaired) database, and screenshotted directly with
-   `PrintWindow`, but simulated mouse clicks were deliberately not sent because the
-   window could not be reliably brought to the OS foreground without risking
-   interference with other windows on the live desktop. The interaction logic
-   itself is covered by the 58-test vertical slice instead, including a
-   concurrency regression test verified to fail without its fix.
+7. **Interactive desktop verification now uses Windows UI Automation, not raw
+   click simulation.** Sidebar navigation, the Settings "Verificar/Arquivar
+   duplicatas" maintenance action, and the Missions status filter were all
+   driven for real (`InvokePattern`, `SelectionItemPattern`, `ExpandCollapsePattern`)
+   against the live database, with results confirmed both from the accessibility
+   tree and by direct SQLite inspection — a step beyond the previous sessions'
+   screenshot-only verification, still short of a scripted end-to-end suite.
+   The interaction logic itself is covered by the vertical-slice test file,
+   including concurrency and query-visibility regression tests verified to fail
+   without their fixes.
 8. **Quest generation ignores recovery state in practice.** The generator fully
    supports it and is tested, but nothing yet tracks recovery, so it always
    passes `'unknown'`.
@@ -141,6 +147,15 @@ Each is tracked in `ROADMAP.md`.
 10. **One template proves the Daily Protocol model, not a library of them.**
     `protocol.foundation_cycle` is real, generated, calibrated and completable
     end-to-end — but it is currently the only Daily Protocol template.
+11. **ADR-0010's repair, as first shipped, was necessary but not sufficient.**
+    The row-level archiving logic was correct, but three other things were
+    wrong at the same time: Home/Today read an entirely different, unfiltered
+    query than the one the repair's results were verified against; the
+    dedup query missed a duplicate whose sibling had already been accepted;
+    and it missed duplicates that had lapsed to `expired` before ever being
+    decided. All three are fixed and regression-tested now (ADR-0013), but
+    it is the concrete reason this document previously and incorrectly
+    reported the bug as resolved — see `CHANGELOG.md` for the full account.
 
 ---
 
@@ -153,13 +168,16 @@ the entire product: XP currently exists alone, which makes SYSTEM temporarily
 resemble the "effort equals skill" model that `GAME_SYSTEMS.md` §1 explicitly
 rejects. Until mastery exists, completing quests is the only signal, and that is
 precisely the conflation the design is built to avoid. Nothing discovered while
-fixing the quest engine's generation-integrity bugs changed this priority — every
-bug found this session (the concurrency race, the missing workload ceiling, the
-weak duplicate control, the translation-key gap) was a correctness defect in
-already-specified behaviour, not evidence that a different structural priority
-should come first. If anything, the new `reflection_note`/`evidence_note`
-columns and the first-class objective model built this session give mastery a
-noticeably stronger evidence substrate to build on than before.
+fixing the quest engine's generation-integrity bugs — across either session —
+changed this priority. Every bug found (the concurrency race, the missing
+workload ceiling, the weak duplicate control, the translation-key gap, and
+this session's query-scope inconsistency plus the two remaining duplicate-
+detection gaps, ADR-0013) was a correctness defect in already-specified
+behaviour, not evidence that a different structural priority should come
+first. If anything, the `reflection_note`/`evidence_note` columns and the
+first-class objective model give mastery a noticeably stronger evidence
+substrate to build on than before. This session was, per explicit
+instruction, a focused bug repair — no milestone work was started here.
 
 Concretely:
 

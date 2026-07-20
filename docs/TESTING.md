@@ -20,7 +20,7 @@ npm run verify         # typecheck + lint + test + build — the pre-commit gate
 
 ## Current coverage
 
-247 tests across 11 files.
+259 tests across 11 files.
 
 | Suite                                    | Tests | Covers                                                                                                                                      |
 | ------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -34,7 +34,7 @@ npm run verify         # typecheck + lint + test + build — the pre-commit gate
 | `achievements/definitions.test.ts`         | 4     | Definition/localization shape, presentation ordering                                                                                         |
 | `i18n/index.test.ts`                       | 48    | Default locale is pt-BR, switching, **catalogue key-shape parity between `en` and `pt-BR`**, missing-key fallback, number/date formatting, **translation-key leak prevention across every dynamic key space used in the UI** |
 | `features/quests/useQuestEncounterQueue.test.tsx` | 5 | One modal per session, the rest prepared silently with a count, silent mode, prepared-summary dismissal — the first React hook test in the project |
-| `tests/vertical-slice.test.ts`             | 58    | Full flow end to end, including **restart and state restoration**, quest lifecycle, the **concurrent-generation race regression**, recalibration workload accumulation, duplicate-quest repair, Daily Protocol/objective persistence |
+| `tests/vertical-slice.test.ts`             | 70    | Full flow end to end, including **restart and state restoration**, quest lifecycle, the **concurrent-generation race regression**, recalibration workload accumulation, duplicate-quest repair, Daily Protocol/objective persistence, and an 11-test **query-visibility regression block** reproducing the real 21-quest bug |
 
 ## Notable test designs
 
@@ -148,6 +148,23 @@ click-through was not performed for the same OS-foreground reason; the new
 concurrency, budget, duplicate-repair and objective/baseline behaviour is
 covered by the automated suite instead, including a regression test verified
 to fail without the fix (see "Notable test designs" above).
+
+**2026-07-20 second re-check (query-scope and duplicate-detection fix,
+ADR-0013):** the previous re-check's one-off script had archived the row-level
+duplicates correctly, but the real relaunched app still showed 21 quests for
+the day — direct inspection confirmed `getQuestsForDate` (feeding Home/Today)
+had never gained the same `archived` exclusion `getAllQuests` (Missions) had.
+After the fix, `npm run tauri:dev` was cold-restarted three separate times
+(full process-tree kill and relaunch each time, not relying on Vite HMR, to
+rule out stale in-memory state as the explanation) and driven with Windows UI
+Automation rather than screenshots alone: `InvokePattern` to navigate the
+sidebar and trigger the Settings "Verificar/Arquivar duplicatas" action for
+real, `ExpandCollapsePattern`/`SelectionItemPattern` to operate the Missions
+status filter and select the newly-added "Arquivada" option. Every UI-reported
+number (0/5 quests, 250 minutes, "Nenhuma duplicata encontrada" on a second
+check, 19 items under the Archived filter) was cross-checked against a direct
+SQLite query against the same live file the app had open, not trusted on its
+own — the caution this document's own prior entries did not fully apply.
 
 ## Determinism
 
