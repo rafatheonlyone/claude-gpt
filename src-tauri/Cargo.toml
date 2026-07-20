@@ -1,0 +1,33 @@
+[package]
+name = "system-app"
+version = "0.1.0"
+description = "SYSTEM — a lifelong personal evolution operating system"
+authors = ["SYSTEM"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary name on Windows.
+name = "system_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `bundled` compiles SQLite from source so the app never depends on a system
+# library being present or being a particular version.
+rusqlite = { version = "0.32", features = ["bundled", "column_decltype", "backup"] }
+thiserror = "2"
+chrono = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

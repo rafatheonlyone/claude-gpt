@@ -1,0 +1,167 @@
+.app {
+  height: 100%;
+  background:
+    radial-gradient(1200px 700px at 50% -12%, rgba(74, 140, 255, 0.08), transparent 62%),
+    radial-gradient(900px 600px at 92% 8%, rgba(139, 108, 255, 0.06), transparent 60%),
+    var(--surface-void);
+  overflow: hidden;
+}
+
+.app--booting {
+  background: var(--surface-void);
+}
+
+/* ------------------------------------------------------------------ buttons */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  min-height: 38px;
+  padding: 0 var(--space-16);
+  border-radius: var(--radius-md);
+  border: var(--border-hairline);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-size: var(--type-body);
+  font-weight: 500;
+  transition:
+    background var(--motion-quick) var(--ease-standard),
+    border-color var(--motion-quick) var(--ease-standard),
+    color var(--motion-quick) var(--ease-standard),
+    transform var(--motion-instant) var(--ease-standard);
+}
+
+.button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(122, 160, 255, 0.24);
+  color: var(--text-primary);
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(calc(1px * var(--motion-scale)));
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.button--primary {
+  background: linear-gradient(180deg, var(--accent-core), var(--accent-deep));
+  border-color: rgba(122, 160, 255, 0.5);
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(43, 95, 204, 0.32);
+}
+
+.button--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent-core));
+  border-color: rgba(160, 190, 255, 0.62);
+  color: #fff;
+}
+
+.button--wide {
+  min-width: 200px;
+}
+
+.link-button {
+  color: var(--text-tertiary);
+  font-size: var(--type-detail);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(122, 160, 255, 0.3);
+  transition: color var(--motion-quick) var(--ease-standard);
+}
+
+.link-button:hover {
+  color: var(--accent-bright);
+}
+
+/* ----------------------------------------------------------- error boundary */
+
+.error-boundary {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-32);
+}
+
+.error-boundary__panel {
+  max-width: 520px;
+  padding: var(--space-32);
+  border-radius: var(--radius-lg);
+  border: var(--border-hairline);
+  background: var(--surface-base);
+  box-shadow: var(--shadow-panel);
+}
+
+.error-boundary__title {
+  font-size: var(--type-title);
+  font-weight: 500;
+  margin-bottom: var(--space-12);
+}
+
+.error-boundary__body {
+  color: var(--text-secondary);
+  margin-bottom: var(--space-24);
+}
+
+.error-boundary__detail {
+  margin-bottom: var(--space-24);
+  color: var(--text-tertiary);
+  font-size: var(--type-detail);
+}
+
+.error-boundary__detail pre {
+  margin-top: var(--space-8);
+  padding: var(--space-12);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------- desktop required */
+
+.desktop-required {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: var(--space-32);
+  background: var(--surface-void);
+}
+
+.desktop-required__panel {
+  max-width: 480px;
+  text-align: center;
+  padding: var(--space-48);
+  border-radius: var(--radius-lg);
+  border: var(--border-hairline);
+  background: var(--surface-base);
+  box-shadow: var(--shadow-panel);
+}
+
+.desktop-required__title {
+  font-size: var(--type-title);
+  font-weight: 400;
+  margin-bottom: var(--space-16);
+}
+
+.desktop-required__body {
+  color: var(--text-secondary);
+  margin-bottom: var(--space-24);
+}
+
+.desktop-required__command {
+  display: inline-block;
+  padding: var(--space-8) var(--space-16);
+  border-radius: var(--radius-sm);
+  background: var(--surface-inset);
+  border: var(--border-hairline);
+  color: var(--accent-bright);
+  font-size: var(--type-detail);
+}
