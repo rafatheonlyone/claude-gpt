@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { AppInfo } from '../../core/app/system-service';
+import type { AppInfo, DuplicateRepairPreview } from '../../core/app/system-service';
+import type { PhysicalBaselineRecord } from '../../core/app/repositories';
 import type { Locale } from '../../i18n';
 import { useSystem } from '../../app/SystemContext';
 import { audio, type AudioSettings } from '../../audio/engine';
@@ -26,6 +27,18 @@ export function SettingsPage(): React.ReactElement {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [backupError, setBackupError] = useState(false);
+  const [duplicatePreview, setDuplicatePreview] = useState<DuplicateRepairPreview | null>(null);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+  const [repairStatus, setRepairStatus] = useState<string | null>(null);
+  const [repairing, setRepairing] = useState(false);
+  const [baseline, setBaseline] = useState<PhysicalBaselineRecord>({
+    pushupsComfortable: null,
+    squatsComfortable: null,
+    plankSeconds: null,
+    trainingFrequencyPerWeek: null,
+  });
+  const [baselineStatus, setBaselineStatus] = useState<string | null>(null);
+  const [savingBaseline, setSavingBaseline] = useState(false);
 
   useEffect(() => {
     void Promise.all([service.getPreferences(), service.getAppPreferences(), service.getAppInfo()]).then(
@@ -48,6 +61,9 @@ export function SettingsPage(): React.ReactElement {
         setAppInfo(info);
       },
     );
+    void service.getPhysicalBaseline().then((record) => {
+      if (record) setBaseline(record);
+    });
   }, [service]);
 
   async function updateSoundEnabled(enabled: boolean): Promise<void> {
@@ -89,6 +105,46 @@ export function SettingsPage(): React.ReactElement {
     } catch {
       setBackupError(true);
       setBackupStatus(t('settings.backupError'));
+    }
+  }
+
+  async function handleCheckDuplicates(): Promise<void> {
+    setCheckingDuplicates(true);
+    setRepairStatus(null);
+    try {
+      setDuplicatePreview(await service.previewDuplicateQuestRepair());
+    } finally {
+      setCheckingDuplicates(false);
+    }
+  }
+
+  async function handleRepairDuplicates(): Promise<void> {
+    setRepairing(true);
+    try {
+      const result = await service.repairDuplicateQuests();
+      setRepairStatus(t('settings.maintenanceRepaired', { count: result.totalRedundant }));
+      setDuplicatePreview(null);
+    } finally {
+      setRepairing(false);
+    }
+  }
+
+  function updateBaselineField(key: keyof PhysicalBaselineRecord, raw: string): void {
+    const parsed = raw.trim() === '' ? null : Number(raw);
+    setBaseline((current) => ({
+      ...current,
+      [key]: parsed === null || Number.isFinite(parsed) ? parsed : current[key],
+    }));
+  }
+
+  async function handleSaveBaseline(): Promise<void> {
+    setSavingBaseline(true);
+    setBaselineStatus(null);
+    try {
+      await service.savePhysicalBaseline(baseline);
+      setBaselineStatus(t('settings.baselineSaved'));
+    } finally {
+      setSavingBaseline(false);
     }
   }
 
@@ -210,6 +266,73 @@ export function SettingsPage(): React.ReactElement {
       </section>
 
       <section className="settings-page__section">
+        <h2 className="settings-page__section-title">{t('settings.baselineSection')}</h2>
+        <p className="settings-page__help">{t('settings.baselineBody')}</p>
+
+        <div className="settings-page__baseline-grid">
+          <label className="settings-page__baseline-field">
+            <span className="settings-page__label">{t('settings.baselinePushups')}</span>
+            <input
+              type="number"
+              min={0}
+              className="settings-page__baseline-input"
+              placeholder={t('settings.baselineNotSet')}
+              value={baseline.pushupsComfortable ?? ''}
+              onChange={(e) => updateBaselineField('pushupsComfortable', e.target.value)}
+            />
+          </label>
+          <label className="settings-page__baseline-field">
+            <span className="settings-page__label">{t('settings.baselineSquats')}</span>
+            <input
+              type="number"
+              min={0}
+              className="settings-page__baseline-input"
+              placeholder={t('settings.baselineNotSet')}
+              value={baseline.squatsComfortable ?? ''}
+              onChange={(e) => updateBaselineField('squatsComfortable', e.target.value)}
+            />
+          </label>
+          <label className="settings-page__baseline-field">
+            <span className="settings-page__label">{t('settings.baselinePlank')}</span>
+            <input
+              type="number"
+              min={0}
+              className="settings-page__baseline-input"
+              placeholder={t('settings.baselineNotSet')}
+              value={baseline.plankSeconds ?? ''}
+              onChange={(e) => updateBaselineField('plankSeconds', e.target.value)}
+            />
+          </label>
+          <label className="settings-page__baseline-field">
+            <span className="settings-page__label">{t('settings.baselineFrequency')}</span>
+            <input
+              type="number"
+              min={0}
+              max={7}
+              className="settings-page__baseline-input"
+              placeholder={t('settings.baselineNotSet')}
+              value={baseline.trainingFrequencyPerWeek ?? ''}
+              onChange={(e) => updateBaselineField('trainingFrequencyPerWeek', e.target.value)}
+            />
+          </label>
+        </div>
+
+        <button
+          type="button"
+          className="button button--primary"
+          onClick={() => void handleSaveBaseline()}
+          disabled={savingBaseline}
+        >
+          {savingBaseline ? t('common.loading') : t('settings.baselineSave')}
+        </button>
+        {baselineStatus && (
+          <p className="settings-page__success" role="status">
+            {baselineStatus}
+          </p>
+        )}
+      </section>
+
+      <section className="settings-page__section">
         <h2 className="settings-page__section-title">{t('settings.privacySection')}</h2>
         <p className="settings-page__static-text">{t('settings.privacyBody')}</p>
       </section>
@@ -229,6 +352,57 @@ export function SettingsPage(): React.ReactElement {
         {backupStatus && (
           <p className={backupError ? 'settings-page__error' : 'settings-page__success'} role="status">
             {backupStatus}
+          </p>
+        )}
+      </section>
+
+      <section className="settings-page__section">
+        <h2 className="settings-page__section-title">{t('settings.maintenanceSection')}</h2>
+        <p className="settings-page__help">{t('settings.maintenanceBody')}</p>
+        <button
+          type="button"
+          className="button"
+          onClick={() => void handleCheckDuplicates()}
+          disabled={checkingDuplicates}
+        >
+          {checkingDuplicates ? t('common.loading') : t('settings.maintenanceCheckButton')}
+        </button>
+
+        {duplicatePreview && (
+          <div className="settings-page__maintenance-preview">
+            {duplicatePreview.totalRedundant === 0 ? (
+              <p role="status">{t('settings.maintenanceNoneFound')}</p>
+            ) : (
+              <>
+                <p role="status">
+                  {t('settings.maintenancePreviewSummary', { count: duplicatePreview.totalRedundant })}
+                </p>
+                <ul className="settings-page__maintenance-list">
+                  {duplicatePreview.groups.map((group) => (
+                    <li key={`${group.templateId}-${group.dueDate ?? ''}`}>
+                      {t('settings.maintenanceGroupLine', {
+                        title: group.title,
+                        count: group.redundantIds.length,
+                      })}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className="button button--primary"
+                  onClick={() => void handleRepairDuplicates()}
+                  disabled={repairing}
+                >
+                  {repairing ? t('common.loading') : t('settings.maintenanceRepairButton')}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {repairStatus && (
+          <p className="settings-page__success" role="status">
+            {repairStatus}
           </p>
         )}
       </section>

@@ -48,6 +48,7 @@ export interface QuestRecord {
   readonly completedAt: string | null;
   readonly reflectionNote: string | null;
   readonly evidenceNote: string | null;
+  readonly templateId: string | null;
 }
 
 export interface QuestStepRecord {
@@ -57,6 +58,25 @@ export interface QuestStepRecord {
   readonly description: string;
   readonly optional: boolean;
   readonly completed: boolean;
+}
+
+export interface ObjectiveRecord {
+  readonly id: string;
+  readonly kind: string;
+  readonly label: string;
+  readonly target: number | null;
+  readonly current: number;
+  readonly unit: string | null;
+  readonly optional: boolean;
+  readonly notes: string | null;
+  readonly completedAt: string | null;
+}
+
+export interface PhysicalBaselineRecord {
+  readonly pushupsComfortable: number | null;
+  readonly squatsComfortable: number | null;
+  readonly plankSeconds: number | null;
+  readonly trainingFrequencyPerWeek: number | null;
 }
 
 export interface QuestFeedbackRecord {
@@ -73,7 +93,8 @@ export interface QuestListFilter {
 
 const QUEST_COLUMNS = `id, title, description, purpose, domain, quest_type, difficulty,
               estimated_minutes, status, generation_rationale, awarded_xp, due_date,
-              created_at, presented_at, postponed_at, completed_at, reflection_note, evidence_note`;
+              created_at, presented_at, postponed_at, completed_at, reflection_note, evidence_note,
+              template_id`;
 
 const asString = (value: unknown): string => String(value ?? '');
 const asNumber = (value: unknown): number => Number(value ?? 0);
@@ -287,12 +308,18 @@ export class Repositories {
    * and belong exclusively to the cinematic queue, never to a browsable list.
    */
   async getAllQuests(userId: string, filter: QuestListFilter = {}): Promise<QuestRecord[]> {
-    const clauses: string[] = ["user_id = ?", "status != 'detected'"];
+    const clauses: string[] = ['user_id = ?'];
     const params: SqlParam[] = [userId];
 
     if (filter.status && filter.status.length > 0) {
       clauses.push(`status IN (${filter.status.map(() => '?').join(', ')})`);
       params.push(...filter.status);
+    } else {
+      // Default browsing view: `detected` is pre-encounter (belongs only to
+      // the cinematic queue) and `archived` is a duplicate-repair outcome,
+      // not something to browse day to day. An explicit status filter can
+      // still ask for either — the Missions "Archived" group does exactly that.
+      clauses.push("status NOT IN ('detected', 'archived')");
     }
     if (filter.domain) {
       clauses.push('domain = ?');
@@ -420,6 +447,362 @@ export class Repositories {
       `UPDATE quests SET status = 'expired', updated_at = ?
         WHERE user_id = ? AND status IN ('detected','offered','accepted') AND due_date < ?`,
       [now, userId, today],
+    );
+  }
+
+  /**
+   * Claims the right to generate quests for a date.
+   *
+   * The row's existence *is* the lock: `INSERT OR IGNORE` either creates it
+   * (this caller won) or silently does nothing (someone else already holds
+   * it). This is what makes `ensureTodayQuests` safe when several UI
+   * components mount at once and each independently decides "no quests yet,
+   * I should generate" — without it, every one of them wins that race
+   * simultaneously. See migration 003 for the real database evidence.
+   */
+  async tryAcquireGenerationLock(userId: string, date: string, now: string): Promise<boolean> {
+    const result = await this.db.execute(
+      'INSERT OR IGNORE INTO daily_generation_locks (user_id, date, created_at) VALUES (?, ?, ?)',
+      [userId, date, now],
+    );
+    return result.changes === 1;
+  }
+
+  /**
+   * Minutes and counts already committed to a date — accepted, postponed or
+   * completed quests. `postponed` counts because the user already decided to
+   * do it, just not today; it still occupies the day's budget rather than
+   * vanishing. `side`-type quests are treated as optional and excluded from
+   * the primary/demanding counts, matching the mandatory-vs-optional split
+   * the workload budget uses.
+   */
+  async getCommittedWorkload(
+    userId: string,
+    date: string,
+  ): Promise<{ minutes: number; primaryCount: number; demandingOrAbove: boolean }> {
+    const rows = await this.db.query(
+      `SELECT quest_type, difficulty, estimated_minutes FROM quests
+        WHERE user_id = ? AND due_date = ? AND status IN ('accepted','postponed','completed')`,
+      [userId, date],
+    );
+    let minutes = 0;
+    let primaryCount = 0;
+    let demandingOrAbove = false;
+    for (const row of rows) {
+      minutes += asNumber(row['estimated_minutes']);
+      if (asString(row['quest_type']) !== 'side') {
+        primaryCount += 1;
+        const difficulty = asString(row['difficulty']);
+        if (difficulty === 'demanding' || difficulty === 'severe') demandingOrAbove = true;
+      }
+    }
+    return { minutes, primaryCount, demandingOrAbove };
+  }
+
+  async saveGenerationPlan(
+    userId: string,
+    date: string,
+    plan: {
+      availableMinutes: number;
+      budgetMinutes: number;
+      plannedMinutes: number;
+      mandatoryCount: number;
+      optionalCount: number;
+      overloaded: boolean;
+      breakdown: ReadonlyArray<{ label: string; detail: string }>;
+    },
+    now: string,
+  ): Promise<void> {
+    await this.db.execute(
+      `INSERT INTO daily_generation_plans
+         (user_id, date, available_minutes, budget_minutes, planned_minutes,
+          mandatory_count, optional_count, overloaded, breakdown, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, date) DO UPDATE SET
+         available_minutes = excluded.available_minutes,
+         budget_minutes     = excluded.budget_minutes,
+         planned_minutes    = excluded.planned_minutes,
+         mandatory_count    = excluded.mandatory_count,
+         optional_count     = excluded.optional_count,
+         overloaded         = excluded.overloaded,
+         breakdown          = excluded.breakdown,
+         updated_at         = excluded.updated_at`,
+      [
+        userId,
+        date,
+        plan.availableMinutes,
+        plan.budgetMinutes,
+        plan.plannedMinutes,
+        plan.mandatoryCount,
+        plan.optionalCount,
+        plan.overloaded ? 1 : 0,
+        JSON.stringify(plan.breakdown),
+        now,
+      ],
+    );
+  }
+
+  async getGenerationPlan(
+    userId: string,
+    date: string,
+  ): Promise<{
+    availableMinutes: number;
+    budgetMinutes: number;
+    plannedMinutes: number;
+    mandatoryCount: number;
+    optionalCount: number;
+    overloaded: boolean;
+    breakdown: ReadonlyArray<{ label: string; detail: string }>;
+  } | null> {
+    const rows = await this.db.query(
+      `SELECT available_minutes, budget_minutes, planned_minutes, mandatory_count,
+              optional_count, overloaded, breakdown
+         FROM daily_generation_plans WHERE user_id = ? AND date = ?`,
+      [userId, date],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    let breakdown: ReadonlyArray<{ label: string; detail: string }> = [];
+    try {
+      breakdown = JSON.parse(asString(row['breakdown'])) as ReadonlyArray<{ label: string; detail: string }>;
+    } catch {
+      breakdown = [];
+    }
+    return {
+      availableMinutes: asNumber(row['available_minutes']),
+      budgetMinutes: asNumber(row['budget_minutes']),
+      plannedMinutes: asNumber(row['planned_minutes']),
+      mandatoryCount: asNumber(row['mandatory_count']),
+      optionalCount: asNumber(row['optional_count']),
+      overloaded: asBoolean(row['overloaded']),
+      breakdown,
+    };
+  }
+
+  /**
+   * Template ids the user currently has active (not rejected/expired), for
+   * the generator's hard duplicate/cooldown filter — see `docs/DECISIONS.md`
+   * ADR-0010. Generation is entirely template-based, so a template id is
+   * already a deterministic content fingerprint: two quests sharing one are
+   * the same generated content by construction.
+   */
+  async getActiveTemplateIds(userId: string): Promise<Set<string>> {
+    const rows = await this.db.query(
+      `SELECT DISTINCT template_id FROM quests
+        WHERE user_id = ? AND template_id IS NOT NULL
+          AND status IN ('detected','offered','accepted','postponed')`,
+      [userId],
+    );
+    return new Set(rows.map((r) => asString(r['template_id'])).filter((id) => id.length > 0));
+  }
+
+  /**
+   * Groups of redundant generated quests: the same template, generated for
+   * the same date, still undecided or postponed. Never considers `accepted`,
+   * `completed`, `rejected`, `expired` or user-created (`source = 'user'`)
+   * quests — those are real decisions or real content, never candidates for
+   * repair. Grouping by date (not just template) is deliberate: a
+   * `repeatable` template legitimately recurring across many days is normal
+   * content, not a duplicate — only several copies landing on the *same* day
+   * are the bug this repairs (see migration 003/004, ADR-0010).
+   *
+   * Within a group, the most recently created quest is kept; the rest are
+   * reported as redundant. `repairDuplicateQuests` is what actually archives
+   * them — this method only ever reads.
+   */
+  async findDuplicateGeneratedQuests(userId: string): Promise<
+    Array<{ templateId: string; dueDate: string | null; title: string; keepId: string; redundantIds: string[] }>
+  > {
+    const rows = await this.db.query(
+      `SELECT id, template_id, due_date, title, created_at FROM quests
+        WHERE user_id = ? AND source = 'rules'
+          AND status IN ('detected','offered','postponed')
+        ORDER BY due_date, created_at DESC`,
+      [userId],
+    );
+
+    const groups = new Map<
+      string,
+      { templateId: string; dueDate: string | null; title: string; ids: string[] }
+    >();
+
+    for (const row of rows) {
+      const templateId = asNullableString(row['template_id']);
+      const dueDate = asNullableString(row['due_date']);
+      // Rows written before migration 003 have no `template_id` — fall back
+      // to (title, due_date) as a content fingerprint so pre-existing
+      // duplicates (the exact real-world data this repair exists for) are
+      // still found, not just ones generated after the fix landed.
+      const fingerprint = templateId ?? `title:${asString(row['title'])}`;
+      const key = `${fingerprint}::${dueDate ?? ''}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.ids.push(asString(row['id']));
+      } else {
+        groups.set(key, { templateId: fingerprint, dueDate, title: asString(row['title']), ids: [asString(row['id'])] });
+      }
+    }
+
+    const duplicates: Array<{
+      templateId: string;
+      dueDate: string | null;
+      title: string;
+      keepId: string;
+      redundantIds: string[];
+    }> = [];
+    for (const group of groups.values()) {
+      if (group.ids.length <= 1) continue;
+      // Rows arrived ordered newest-first within each group (created_at DESC).
+      const [keepId, ...redundantIds] = group.ids;
+      duplicates.push({
+        templateId: group.templateId,
+        dueDate: group.dueDate,
+        title: group.title,
+        keepId: keepId!,
+        redundantIds,
+      });
+    }
+    return duplicates;
+  }
+
+  /** Archives specific quest ids — the repair action's write path. Never touches anything else. */
+  async archiveQuests(questIds: readonly string[], now: string): Promise<void> {
+    if (questIds.length === 0) return;
+    await this.db.transaction(
+      questIds.map((id) => ({
+        sql: "UPDATE quests SET status = 'archived', updated_at = ? WHERE id = ?",
+        params: [now, id],
+      })),
+    );
+  }
+
+  // -------------------------------------------------------------- objectives
+
+  async createObjectives(
+    questId: string,
+    objectives: ReadonlyArray<{
+      id: string;
+      position: number;
+      kind: string;
+      label: string;
+      target: number | null;
+      unit: string | null;
+      optional: boolean;
+    }>,
+    now: string,
+  ): Promise<void> {
+    if (objectives.length === 0) return;
+    await this.db.transaction(
+      objectives.map((objective) => ({
+        sql: `INSERT INTO quest_objectives
+                (id, quest_id, position, kind, label, target_value, current_value, unit, optional, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+        params: [
+          objective.id,
+          questId,
+          objective.position,
+          objective.kind,
+          objective.label,
+          objective.target,
+          objective.unit,
+          objective.optional ? 1 : 0,
+          now,
+          now,
+        ],
+      })),
+    );
+  }
+
+  async getObjectives(questId: string): Promise<ObjectiveRecord[]> {
+    const rows = await this.db.query(
+      `SELECT id, kind, label, target_value, current_value, unit, optional, notes, completed_at
+         FROM quest_objectives WHERE quest_id = ? ORDER BY position`,
+      [questId],
+    );
+    return rows.map((row) => ({
+      id: asString(row['id']),
+      kind: asString(row['kind']),
+      label: asString(row['label']),
+      target: row['target_value'] === null ? null : asNumber(row['target_value']),
+      current: asNumber(row['current_value']),
+      unit: asNullableString(row['unit']),
+      optional: asBoolean(row['optional']),
+      notes: asNullableString(row['notes']),
+      completedAt: asNullableString(row['completed_at']),
+    }));
+  }
+
+  async getObjectiveById(objectiveId: string): Promise<ObjectiveRecord | null> {
+    const rows = await this.db.query(
+      `SELECT id, kind, label, target_value, current_value, unit, optional, notes, completed_at
+         FROM quest_objectives WHERE id = ?`,
+      [objectiveId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: asString(row['id']),
+      kind: asString(row['kind']),
+      label: asString(row['label']),
+      target: row['target_value'] === null ? null : asNumber(row['target_value']),
+      current: asNumber(row['current_value']),
+      unit: asNullableString(row['unit']),
+      optional: asBoolean(row['optional']),
+      notes: asNullableString(row['notes']),
+      completedAt: asNullableString(row['completed_at']),
+    };
+  }
+
+  async updateObjectiveProgress(
+    objectiveId: string,
+    current: number,
+    completed: boolean,
+    now: string,
+  ): Promise<void> {
+    await this.db.execute(
+      `UPDATE quest_objectives SET current_value = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+      [current, completed ? now : null, now, objectiveId],
+    );
+  }
+
+  // ---------------------------------------------------------- physical baseline
+
+  async getPhysicalBaseline(userId: string): Promise<PhysicalBaselineRecord | null> {
+    const rows = await this.db.query(
+      `SELECT pushups_comfortable, squats_comfortable, plank_seconds, training_frequency_per_week
+         FROM physical_baseline WHERE user_id = ?`,
+      [userId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      pushupsComfortable: row['pushups_comfortable'] === null ? null : asNumber(row['pushups_comfortable']),
+      squatsComfortable: row['squats_comfortable'] === null ? null : asNumber(row['squats_comfortable']),
+      plankSeconds: row['plank_seconds'] === null ? null : asNumber(row['plank_seconds']),
+      trainingFrequencyPerWeek:
+        row['training_frequency_per_week'] === null ? null : asNumber(row['training_frequency_per_week']),
+    };
+  }
+
+  async savePhysicalBaseline(userId: string, baseline: PhysicalBaselineRecord, now: string): Promise<void> {
+    await this.db.execute(
+      `INSERT INTO physical_baseline
+         (user_id, pushups_comfortable, squats_comfortable, plank_seconds, training_frequency_per_week, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         pushups_comfortable = excluded.pushups_comfortable,
+         squats_comfortable  = excluded.squats_comfortable,
+         plank_seconds       = excluded.plank_seconds,
+         training_frequency_per_week = excluded.training_frequency_per_week,
+         updated_at           = excluded.updated_at`,
+      [
+        userId,
+        baseline.pushupsComfortable,
+        baseline.squatsComfortable,
+        baseline.plankSeconds,
+        baseline.trainingFrequencyPerWeek,
+        now,
+      ],
     );
   }
 
@@ -566,5 +949,6 @@ function toQuestRecord(row: Record<string, unknown>): QuestRecord {
     completedAt: asNullableString(row['completed_at']),
     reflectionNote: asNullableString(row['reflection_note']),
     evidenceNote: asNullableString(row['evidence_note']),
+    templateId: asNullableString(row['template_id']),
   };
 }

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Outlet } from 'react-router-dom';
-import { AnimatePresence } from 'motion/react';
+import { Outlet, Link } from 'react-router-dom';
+import { AnimatePresence, motion } from 'motion/react';
 import { useSystem } from './SystemContext';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import { QuestEncounter } from '../features/quests/QuestEncounter';
 import { useQuestEncounterQueue } from '../features/quests/useQuestEncounterQueue';
 import { ErrorBoundary } from './ErrorBoundary';
+import { t } from '../i18n';
 import './shell.css';
 
 const SIDEBAR_PREF_KEY = 'sidebarCollapsed';
@@ -42,6 +43,30 @@ export function Shell(): React.ReactElement {
 
       <div className="shell__main">
         <TopBar />
+        <AnimatePresence>
+          {encounters.preparedCount > 0 && (
+            <motion.div
+              className="shell__prepared-banner"
+              role="status"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.25 }}
+            >
+              <span>
+                {encounters.preparedCount === 1
+                  ? t('questEncounter.preparedSummaryOne')
+                  : t('questEncounter.preparedSummaryMany', { count: encounters.preparedCount })}
+              </span>
+              <Link to="/missoes" className="link-button" onClick={encounters.dismissPreparedSummary}>
+                {t('questEncounter.preparedSummaryReview')}
+              </Link>
+              <button type="button" className="shell__prepared-dismiss" onClick={encounters.dismissPreparedSummary}>
+                {t('questEncounter.preparedSummaryDismiss')}
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <main className="shell__content">
           <ErrorBoundary region="route">
             <Outlet />

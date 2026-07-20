@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { t, setLocale, getLocale, isLocale, formatNumber, formatDate, DEFAULT_LOCALE } from './index';
 import { en } from './en';
 import { ptBR } from './pt-BR';
+import { DOMAINS, RANKS } from '../core/domain/types';
+import { DIFFICULTY_BASE_XP } from '../core/progression/xp';
 
 afterEach(() => {
   setLocale(DEFAULT_LOCALE);
@@ -78,6 +80,41 @@ describe('catalogue parity', () => {
       expect(value.length, `pt-BR.${key} is empty`).toBeGreaterThan(0);
     }
   });
+});
+
+describe('translation key leak prevention', () => {
+  // Every dynamically-interpolated key prefix actually used in the UI
+  // (`t(\`domain.${quest.domain}\`)`, `t(\`rank.${status.rank}\`)`, ...). A
+  // prefix/value pair missing from a catalogue resolves to the raw key
+  // (e.g. "domain.physical") and leaks straight onto the screen — this is
+  // exactly the class of bug that shipped silently because the parity test
+  // only compares the two catalogues against *each other*, and a key absent
+  // from both passes that check.
+  const dynamicKeySpaces: ReadonlyArray<{ prefix: string; values: readonly string[] }> = [
+    { prefix: 'domain', values: DOMAINS },
+    { prefix: 'rank', values: RANKS },
+    { prefix: 'quest.difficulty', values: Object.keys(DIFFICULTY_BASE_XP) },
+    {
+      prefix: 'quest.states',
+      values: ['detected', 'offered', 'accepted', 'completed', 'expired', 'rejected', 'postponed', 'skipped'],
+    },
+    { prefix: 'achievements.rarity', values: ['standard', 'rare', 'legendary'] },
+  ];
+
+  for (const { prefix, values } of dynamicKeySpaces) {
+    for (const value of values) {
+      const key = `${prefix}.${value}`;
+
+      it(`resolves "${key}" to real copy in both locales`, () => {
+        for (const locale of ['pt-BR', 'en'] as const) {
+          setLocale(locale);
+          const resolved = t(key);
+          expect(resolved, `${locale} ${key} rendered its own key literally`).not.toBe(key);
+          expect(resolved.length).toBeGreaterThan(0);
+        }
+      });
+    }
+  }
 });
 
 describe('number formatting', () => {

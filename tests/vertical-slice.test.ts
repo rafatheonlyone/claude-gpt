@@ -3,6 +3,8 @@ import { SystemService, type OnboardingInput } from '../src/core/app/system-serv
 import { NodeSqliteAdapter } from '../src/platform/test/sqlite-adapter';
 import { createTestPlatform, type TestPlatform } from '../src/platform/test/test-platform';
 import { levelFromTotalXp } from '../src/core/progression/levels';
+import { Repositories } from '../src/core/app/repositories';
+import { calibratedTarget } from '../src/core/quests/objectives';
 
 /**
  * End-to-end proof of the first vertical slice:
@@ -96,6 +98,44 @@ describe('quest generation', () => {
     const first = await service.getDashboard();
     const second = await service.getDashboard();
     expect(second.quests.map((q) => q.id)).toEqual(first.quests.map((q) => q.id));
+  });
+
+  it('never generates duplicate batches when several callers race on first load', async () => {
+    // The real bug this regression test exists for: Shell's encounter queue,
+    // Home and Today each independently call into quest generation on mount.
+    // A real database inspected while diagnosing this had 21 quests inserted
+    // across 7 near-simultaneous batches — a plain check-then-generate raced
+    // and every caller "won". Simulate exactly that shape of concurrency
+    // against one shared service and database.
+    const fresh = createTestPlatform({ storage: new NodeSqliteAdapter(':memory:') });
+    const raceService = await SystemService.create(fresh);
+    await raceService.completeOnboarding(onboarding);
+
+    const [dashboardA, pendingA, dashboardB, pendingB, dashboardC] = await Promise.all([
+      raceService.getDashboard(),
+      raceService.getPendingEncounters(),
+      raceService.getDashboard(),
+      raceService.getPendingEncounters(),
+      raceService.getDashboard(),
+    ]);
+
+    // At most one batch's worth of quests may exist, no matter how many
+    // callers raced to be the one that generates it.
+    const idsA = dashboardA.quests.map((q) => q.id).sort();
+    expect(idsA.length).toBeGreaterThan(0);
+    expect(idsA.length).toBeLessThanOrEqual(5);
+
+    // Every racing caller must observe the very same day, not independent ones.
+    expect(dashboardB.quests.map((q) => q.id).sort()).toEqual(idsA);
+    expect(dashboardC.quests.map((q) => q.id).sort()).toEqual(idsA);
+    expect(pendingA.map((q) => q.id).sort()).toEqual(idsA);
+    expect(pendingB.map((q) => q.id).sort()).toEqual(idsA);
+
+    // And the on-disk truth agrees, independent of any in-memory result.
+    const persisted = await raceService.getPendingEncounters();
+    expect(persisted.map((q) => q.id).sort()).toEqual(idsA);
+
+    await fresh.storage.close();
   });
 
   it('respects the available time the user declared', async () => {
@@ -369,6 +409,338 @@ describe('recalibrateToday', () => {
 
     const stillThere = await service.getQuestDetail(first!.id);
     expect(stillThere?.status).toBe('completed');
+  });
+
+  it('does not accumulate an impossible day across repeated recalibration', async () => {
+    // The exact dev-database scenario this milestone was written to fix:
+    // recalibrating several times in a row must never keep stacking a fixed
+    // number of fresh quests on top of what the day already committed to.
+    const [first] = await service.getPendingEncounters();
+    await service.acceptQuest(first!.id);
+
+    for (let i = 0; i < 6; i += 1) {
+      await service.recalibrateToday();
+    }
+
+    const all = await service.getQuestDetail(first!.id);
+    expect(all?.status).toBe('accepted'); // the accepted quest itself survives untouched
+
+    const today = await service.getDashboard();
+    const totalMinutes = today.quests.reduce((sum, q) => sum + (q.estimatedMinutes ?? 0), 0);
+    const primaryCount = today.quests.filter((q) => q.questType !== 'side').length;
+
+    expect(primaryCount).toBeLessThanOrEqual(5);
+    expect(totalMinutes).toBeLessThan(1140);
+  });
+});
+
+describe('duplicate quest repair', () => {
+  let repairStorage: NodeSqliteAdapter;
+  let repairPlatform: TestPlatform;
+  let repairService: SystemService;
+  let repos: Repositories;
+  let userId: string;
+
+  beforeEach(async () => {
+    repairStorage = new NodeSqliteAdapter(':memory:');
+    repairPlatform = createTestPlatform({ storage: repairStorage });
+    repairService = await SystemService.create(repairPlatform);
+    await repairService.completeOnboarding(onboarding);
+    repos = new Repositories(repairStorage);
+
+    const [firstQuest] = await repairService.getPendingEncounters();
+    userId = (await repairPlatform.storage.query('SELECT id FROM users LIMIT 1'))[0]?.['id'] as string;
+
+    // Manufacture six additional rows sharing the same template and due
+    // date as a real generated quest, reproducing the exact shape a real
+    // database had before this fix existed: several near-identical rows
+    // from what used to be a racing generation call.
+    const now = repairPlatform.clock.now().toISOString();
+    for (let i = 0; i < 6; i += 1) {
+      await repairStorage.execute(
+        `INSERT INTO quests
+           (id, user_id, title, description, quest_type, domain, difficulty,
+            estimated_minutes, status, due_date, source, evidence_level,
+            created_at, updated_at, template_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'postponed', ?, 'rules', 'self_reported', ?, ?, ?)`,
+        [
+          `quest-dup-${i}`,
+          userId,
+          firstQuest!.title,
+          firstQuest!.description,
+          firstQuest!.questType,
+          firstQuest!.domain,
+          firstQuest!.difficulty,
+          firstQuest!.estimatedMinutes,
+          firstQuest!.dueDate,
+          now,
+          now,
+          firstQuest!.templateId,
+        ],
+      );
+    }
+    // The original also needs to be postponed (not left `detected`) to be a
+    // repair candidate, and needs its template_id, which raw generation
+    // already set on the row directly.
+    await repairService.presentQuest(firstQuest!.id);
+    await repairService.postponeQuest(firstQuest!.id);
+  });
+
+  afterEach(async () => {
+    await repairStorage.close();
+  });
+
+  it('also finds duplicates in pre-existing data that has no template_id', async () => {
+    // Rows written before migration 003 (real dev-database data included)
+    // have no template_id at all. The repair must still find them by
+    // falling back to (title, due_date) as the content fingerprint.
+    const legacyUserId = 'user-legacy-no-template';
+    const now = repairPlatform.clock.now().toISOString();
+    await repairStorage.execute('INSERT INTO users (id, created_at, updated_at) VALUES (?, ?, ?)', [
+      legacyUserId,
+      now,
+      now,
+    ]);
+    for (let i = 0; i < 3; i += 1) {
+      await repairStorage.execute(
+        `INSERT INTO quests
+           (id, user_id, title, description, quest_type, domain, difficulty,
+            estimated_minutes, status, due_date, source, evidence_level, created_at, updated_at)
+         VALUES (?, ?, 'Legacy Duplicate', 'desc', 'daily', 'academic', 'light',
+                 20, 'postponed', '2026-07-19', 'rules', 'self_reported', ?, ?)`,
+        [`quest-legacy-${i}`, legacyUserId, now, now],
+      );
+    }
+
+    const duplicates = await repos.findDuplicateGeneratedQuests(legacyUserId);
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0]?.redundantIds).toHaveLength(2);
+  });
+
+  it('previews redundant duplicates without changing anything', async () => {
+    const preview = await repairService.previewDuplicateQuestRepair();
+
+    expect(preview.groups).toHaveLength(1);
+    expect(preview.groups[0]?.redundantIds).toHaveLength(6);
+    expect(preview.totalRedundant).toBe(6);
+
+    const stillPostponed = await repairStorage.query(
+      "SELECT id FROM quests WHERE status = 'postponed' AND user_id = ?",
+      [userId],
+    );
+    expect(stillPostponed).toHaveLength(7); // preview must not have written anything
+  });
+
+  it('archives redundant duplicates, keeping exactly one and preserving every row', async () => {
+    const totalBefore = await repairStorage.query('SELECT id FROM quests WHERE user_id = ?', [userId]);
+
+    const result = await repairService.repairDuplicateQuests();
+    expect(result.totalRedundant).toBe(6);
+
+    const postponed = await repairStorage.query(
+      "SELECT id FROM quests WHERE status = 'postponed' AND user_id = ?",
+      [userId],
+    );
+    expect(postponed).toHaveLength(1);
+
+    const archived = await repairStorage.query(
+      "SELECT id FROM quests WHERE status = 'archived' AND user_id = ?",
+      [userId],
+    );
+    expect(archived).toHaveLength(6);
+
+    // Nothing was deleted — every original row still exists somewhere, only
+    // relabelled. Sibling quests from the same onboarding batch (different
+    // templates, never touched) are still present too.
+    const totalAfter = await repairStorage.query('SELECT id FROM quests WHERE user_id = ?', [userId]);
+    expect(totalAfter).toHaveLength(totalBefore.length);
+  });
+
+  it('is idempotent — repairing twice does not archive anything further', async () => {
+    await repairService.repairDuplicateQuests();
+    const second = await repairService.repairDuplicateQuests();
+    expect(second.totalRedundant).toBe(0);
+
+    const archived = await repairStorage.query(
+      "SELECT id FROM quests WHERE status = 'archived' AND user_id = ?",
+      [userId],
+    );
+    expect(archived).toHaveLength(6);
+  });
+
+  it('never touches accepted or completed quests, even if they share a template with duplicates', async () => {
+    // Accept the one legitimate copy before repairing.
+    const [legitimate] = await repos.findDuplicateGeneratedQuests(userId);
+    await repairService.acceptQuest(legitimate!.keepId);
+
+    await repairService.repairDuplicateQuests();
+
+    const stillAccepted = await repairService.getQuestDetail(legitimate!.keepId);
+    expect(stillAccepted?.status).toBe('accepted');
+  });
+
+  it('archived quests no longer appear in the default browsable list', async () => {
+    await repairService.repairDuplicateQuests();
+    const browsable = await repairService.getAllQuests();
+    for (const quest of browsable) {
+      expect(quest.status).not.toBe('archived');
+    }
+  });
+
+  it('archived quests remain reachable by an explicit status filter', async () => {
+    await repairService.repairDuplicateQuests();
+    const archived = await repairService.getAllQuests({ status: ['archived'] });
+    expect(archived).toHaveLength(6);
+  });
+});
+
+describe('Daily Protocol and objectives', () => {
+  // These tests exercise the objective/calibration/persistence integration
+  // directly rather than depending on the generator's competitive scoring
+  // to select the protocol template on a given run — that selection is
+  // already covered deterministically in generator.test.ts. Here, a
+  // protocol quest is seeded the same way `generateForDate` would have
+  // written one, through the real repository methods.
+  let protocolStorage: NodeSqliteAdapter;
+  let protocolPlatform: TestPlatform;
+  let protocolService: SystemService;
+  let repos: Repositories;
+  let questId: string;
+
+  let protocolQuestCounter = 0;
+
+  async function seedProtocolQuest(): Promise<string> {
+    const userId = (await protocolPlatform.storage.query('SELECT id FROM users LIMIT 1'))[0]?.['id'] as string;
+    const now = protocolPlatform.clock.now().toISOString();
+    protocolQuestCounter += 1;
+    const id = `quest-protocol-${protocolQuestCounter}`;
+    await protocolStorage.execute(
+      `INSERT INTO quests
+         (id, user_id, title, description, quest_type, domain, difficulty,
+          estimated_minutes, status, due_date, source, evidence_level,
+          created_at, updated_at, template_id)
+       VALUES (?, ?, 'Foundation Cycle', 'desc', 'daily_protocol', 'physical', 'moderate',
+               80, 'detected', ?, 'rules', 'self_reported', ?, ?, 'protocol.foundation_cycle')`,
+      [id, userId, now, now, now],
+    );
+
+    const baseline = await protocolService.getPhysicalBaseline();
+    const pushupTarget = calibratedTarget(baseline?.pushupsComfortable ?? null, 10);
+
+    await repos.createObjectives(
+      id,
+      [
+        { id: `${id}-pushups`, position: 0, kind: 'repetitions', label: 'Push-ups', target: pushupTarget, unit: 'reps', optional: false },
+        { id: `${id}-squats`, position: 1, kind: 'repetitions', label: 'Squats', target: 15, unit: 'reps', optional: false },
+        { id: `${id}-study`, position: 2, kind: 'quantity', label: 'Focused study', target: 30, unit: 'min', optional: false },
+        { id: `${id}-programming`, position: 3, kind: 'quantity', label: 'Programming', target: 30, unit: 'min', optional: true },
+      ],
+      now,
+    );
+    return id;
+  }
+
+  beforeEach(async () => {
+    protocolStorage = new NodeSqliteAdapter(':memory:');
+    protocolPlatform = createTestPlatform({ storage: protocolStorage });
+    protocolService = await SystemService.create(protocolPlatform);
+    await protocolService.completeOnboarding(onboarding);
+    repos = new Repositories(protocolStorage);
+    questId = await seedProtocolQuest();
+  });
+
+  afterEach(async () => {
+    await protocolStorage.close();
+  });
+
+  it('carries multiple objectives instead of many separate quests', async () => {
+    const detail = await protocolService.getQuestDetail(questId);
+    expect(detail?.objectives.length).toBeGreaterThan(1);
+  });
+
+  it('calibrates a physical objective target from the user\'s own baseline, never a fixed extreme', async () => {
+    await protocolService.savePhysicalBaseline({
+      pushupsComfortable: 30,
+      squatsComfortable: null,
+      plankSeconds: null,
+      trainingFrequencyPerWeek: null,
+    });
+    const questWithBaseline = await seedProtocolQuest();
+
+    const detail = await protocolService.getQuestDetail(questWithBaseline);
+    const pushups = detail?.objectives.find((o) => o.label === 'Push-ups');
+
+    expect(pushups?.target).toBe(24); // 80% of 30, per calibratedTarget
+    expect(pushups?.target).toBeLessThan(100);
+  });
+
+  it('falls back to a conservative default when no baseline is set', async () => {
+    const detail = await protocolService.getQuestDetail(questId);
+    const pushups = detail?.objectives.find((o) => o.label === 'Push-ups');
+    expect(pushups?.target).toBe(10);
+  });
+
+  it('persists partial progress on one objective independently of the others', async () => {
+    const detail = await protocolService.getQuestDetail(questId);
+    const first = detail!.objectives[0]!;
+
+    await protocolService.updateObjectiveProgress(first.id, 5);
+
+    const reloaded = await protocolService.getQuestDetail(questId);
+    expect(reloaded?.objectives.find((o) => o.id === first.id)?.current).toBe(5);
+    for (const objective of reloaded!.objectives) {
+      if (objective.id !== first.id) expect(objective.current).toBe(0);
+    }
+  });
+
+  it('marks an objective complete once its target is met', async () => {
+    const detail = await protocolService.getQuestDetail(questId);
+    const objective = detail!.objectives.find((o) => o.target !== null)!;
+
+    await protocolService.updateObjectiveProgress(objective.id, objective.target!);
+
+    const reloaded = await protocolService.getQuestDetail(questId);
+    expect(reloaded!.objectives.find((o) => o.id === objective.id)?.completedAt).not.toBeNull();
+  });
+
+  it('does not mark an objective complete while it is still short of target', async () => {
+    const detail = await protocolService.getQuestDetail(questId);
+    const objective = detail!.objectives.find((o) => o.target !== null && o.target > 1)!;
+
+    await protocolService.updateObjectiveProgress(objective.id, objective.target! - 1);
+
+    const reloaded = await protocolService.getQuestDetail(questId);
+    expect(reloaded!.objectives.find((o) => o.id === objective.id)?.completedAt).toBeNull();
+  });
+
+  it('survives a restart with objective progress intact', async () => {
+    const detail = await protocolService.getQuestDetail(questId);
+    await protocolService.updateObjectiveProgress(detail!.objectives[0]!.id, 7);
+
+    // A genuine restart: a brand-new service instance over the same
+    // on-disk database, exactly like reopening the application.
+    const restarted = await SystemService.create(createTestPlatform({ storage: protocolStorage }));
+    const reread = await restarted.getQuestDetail(questId);
+    expect(reread?.objectives[0]?.current).toBe(7);
+  });
+
+  it('completing the protocol with a completion fraction derived from objective progress awards proportional XP', async () => {
+    await protocolStorage.execute("UPDATE quests SET status = 'accepted' WHERE id = ?", [questId]);
+
+    const detail = await protocolService.getQuestDetail(questId);
+    const mandatory = detail!.objectives.filter((o) => !o.optional);
+    for (let i = 0; i < Math.floor(mandatory.length / 2); i += 1) {
+      await protocolService.updateObjectiveProgress(mandatory[i]!.id, mandatory[i]!.target ?? 1);
+    }
+
+    const partial = await protocolService.completeQuest(questId, { completion: 0.5 });
+    expect(partial.award.creditedXp).toBeGreaterThan(0);
+
+    // The same protocol completed in full earns strictly more.
+    const fullId = await seedProtocolQuest();
+    await protocolStorage.execute("UPDATE quests SET status = 'accepted' WHERE id = ?", [fullId]);
+    const full = await protocolService.completeQuest(fullId, { completion: 1 });
+    expect(full.award.creditedXp).toBeGreaterThan(partial.award.creditedXp);
   });
 });
 

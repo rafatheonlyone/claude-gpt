@@ -43,6 +43,8 @@ export const QUEST_TYPES = [
   'milestone',
   'experiment',
   'user',
+  /** One meaningful daily mission carrying several measurable objectives, rather than many single-purpose quests. */
+  'daily_protocol',
 ] as const;
 
 export type QuestType = (typeof QUEST_TYPES)[number];

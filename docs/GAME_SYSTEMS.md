@@ -272,11 +272,46 @@ user's real life is a design failure, not a random-variation feature.
 Recent workload and recovery state clamp total daily proposed effort. The engine will propose _less_
 when the user is depleted, and it explains that it is doing so.
 
+**Daily workload budget (ADR-0009).** Implemented in `src/core/quests/workload-budget.ts`. A day's
+budget is roughly 75% of stated available time, reduced further under moderate or low recovery, then
+reduced again by whatever is already committed to the day (accepted, postponed or completed quests) —
+so a second generation call, or a manual recalibration, can never simply add a fixed number on top of
+an already-full day. Calibrated defaults, not universal truths: a fresh day proposes 3–5 primary
+quests and at most one demanding-or-severe quest, both real numbers a developer can retune, not
+claimed constants of human capacity. This budget is a hard cap during selection, not a
+score — a quest that would push the day over it is removed from the candidate pool the same way an
+infeasible schedule is.
+
+**Hard duplicate exclusion (ADR-0010).** A template already `detected`, `offered`, `accepted` or
+`postponed` for the user is hard-excluded from candidates, not merely down-ranked by the existing
+`variety` score term. Because generation is entirely template-based, the template id is already a
+deterministic content fingerprint — the same template proposed twice while an earlier copy is still
+live is definitionally the same content, not a coincidence to be scored.
+
 **Failure behaviour:** no XP loss, no streak destruction, no shame language. A missed quest triggers a
 short reflection prompt (skippable) and feeds difficulty recalibration. Three consecutive misses in a
 domain lower proposed difficulty automatically and prompt the Architect to ask whether the goal itself
 still matters — because the most useful response to repeated failure is usually to fix the goal, not
 to push harder.
+
+### 9.1 Daily Protocols and objectives (ADR-0012)
+
+A Daily Protocol is a quest (`quest_type = 'daily_protocol'`) whose content is several first-class,
+independently-progressable objectives (`src/core/quests/objectives.ts`) instead of free-text steps —
+the structured, satisfying clarity of a single daily mission, without copying any protected work's
+text, layout or assets. Objectives support numeric progress (repetitions, duration, distance,
+quantity, a numeric score or a percentage) or zero/one completion (a checklist item or a plain binary
+confirmation). A protocol's overall completion is driven by its **mandatory** objectives only — an
+undone optional objective never blocks or dilutes it, the same principle already applied to optional
+workload generally.
+
+Physical objective targets are never a fixed benchmark. They are calibrated from the user's own
+`physical_baseline` — self-reported *comfortable* capacity, editable at any time from Settings — at
+80% of that figure, which is deliberately sustainable rather than maximal (a protocol is meant to be
+repeated, not passed once). A user who has not set a baseline still gets the objective, at a
+conservative, clearly-smaller default. True adaptive progressive overload (targets rising over time
+with demonstrated consistency) is not yet implemented; today's 80%-of-stated-baseline is the
+calibration mechanism, and it is a real function of the user's own numbers rather than a placeholder.
 
 ---
 

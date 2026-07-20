@@ -193,6 +193,28 @@ export const en = {
     recommendationTitle: "The Architect's recommendation",
   },
 
+  domain: {
+    physical: 'Physical',
+    academic: 'Academic',
+    technical: 'Technical',
+    mental: 'Mental',
+    creative: 'Creative',
+    social: 'Social',
+    financial: 'Financial',
+    recovery: 'Recovery',
+  },
+
+  rank: {
+    dormant: 'Dormant',
+    threshold: 'Threshold',
+    emergent: 'Emergent',
+    ascendant: 'Ascendant',
+    vanguard: 'Vanguard',
+    paragon: 'Paragon',
+    sovereign: 'Sovereign',
+    transcendent: 'Transcendent',
+  },
+
   quests: {
     title: 'Quests',
     searchPlaceholder: 'Search quests',
@@ -263,6 +285,7 @@ export const en = {
     milestone: 'Milestone',
     experiment: 'Architect experiment',
     user: 'User-created',
+    daily_protocol: 'Daily protocol',
   },
 
   questDetail: {
@@ -283,6 +306,13 @@ export const en = {
     reflection: 'Reflection',
     evidence: 'Evidence',
     completedAt: 'Completed at {date}',
+    objectives: 'Objectives',
+    objectivesProgress: '{completed} / {total} objectives',
+    objectiveOptional: 'Optional',
+    objectiveDone: 'Done',
+    objectiveMarkDone: 'Mark done',
+    objectiveUpdate: 'Update',
+    objectiveSave: 'Save',
   },
 
   questEncounter: {
@@ -302,6 +332,10 @@ export const en = {
     rewardsLabel: 'Reward',
     queueRemaining: '{count} more waiting',
     dismissHint: 'Press escape to decide later',
+    preparedSummaryOne: '1 additional quest was prepared.',
+    preparedSummaryMany: '{count} additional quests were prepared.',
+    preparedSummaryReview: 'Review in Quests',
+    preparedSummaryDismiss: 'Dismiss',
   },
 
   completion: {
@@ -422,6 +456,25 @@ export const en = {
     backupNowButton: 'Back up now',
     backupSuccess: 'Backup saved to {path}',
     backupError: 'The backup could not be completed.',
+    maintenanceSection: 'Maintenance',
+    maintenanceBody:
+      'Check for quests generated as duplicates of each other — the same content, on the same day, never decided on. Nothing is ever deleted; duplicates are archived, and your decisions and history are always preserved.',
+    maintenanceCheckButton: 'Check for duplicate quests',
+    maintenanceNoneFound: 'No duplicates found.',
+    maintenancePreviewSummary: '{count} redundant quests found. Reviewing before anything changes:',
+    maintenanceGroupLine: '{title} — {count} redundant copies',
+    maintenanceRepairButton: 'Archive redundant duplicates',
+    maintenanceRepaired: '{count} redundant quests archived.',
+    baselineSection: 'Physical baseline',
+    baselineBody:
+      'Optional, and editable at any time. Daily Protocol physical objectives are calibrated to 80% of what you report here — sustainable, not maximal. Leave a field blank and a conservative default is used instead.',
+    baselinePushups: 'Comfortable push-ups in one set',
+    baselineSquats: 'Comfortable squats in one set',
+    baselinePlank: 'Comfortable plank hold (seconds)',
+    baselineFrequency: 'Training days per week',
+    baselineNotSet: 'Not set',
+    baselineSave: 'Save baseline',
+    baselineSaved: 'Baseline saved.',
     aboutSection: 'About',
     versionLabel: 'Version',
     schemaVersionLabel: 'Data schema',

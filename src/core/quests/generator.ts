@@ -1,11 +1,12 @@
 import type { Domain } from '../domain/types';
 import type { Difficulty } from '../progression/xp';
-import { QUEST_TEMPLATES, localizeTemplate, type QuestTemplate } from './templates';
+import { QUEST_TEMPLATES, localizeTemplate, type QuestTemplate, type ObjectiveTemplateDefinition } from './templates';
 import { SeededRandom, dailySeed } from '../util/random';
 import { daysBetween } from '../platform/clock';
 import type { ContentLocale } from '../content-locale';
 import { DEFAULT_CONTENT_LOCALE } from '../content-locale';
 import { RATIONALE_PHRASES } from './rationale-i18n';
+import { computeDailyWorkloadBudget } from './workload-budget';
 
 /**
  * Deterministic quest generation (see `docs/AI_ARCHITECT.md` §3 and
@@ -37,8 +38,14 @@ export interface GenerationContext {
   readonly goals: readonly string[];
   /** Last active date per domain, `null` if never. Drives neglect recovery. */
   readonly domainLastActive: Partial<Record<Domain, string | null>>;
-  /** Template IDs offered recently, for variety. */
+  /** Template IDs offered recently, for variety (soft — deprioritises, does not exclude). */
   readonly recentTemplateIds: readonly string[];
+  /**
+   * Template IDs the user currently has active (still `detected`, `offered`,
+   * `accepted`, or `postponed`) — hard-excluded so the same content is never
+   * proposed twice while it is still live. See ADR-0010.
+   */
+  readonly excludedTemplateIds?: readonly string[];
   /** Completion rate per domain over the recent window, 0–1. */
   readonly completionRateByDomain: Partial<Record<Domain, number>>;
   readonly excludedDomains: readonly Domain[];
@@ -46,8 +53,14 @@ export interface GenerationContext {
   readonly injuredAreas: readonly string[];
   readonly recoveryState: RecoveryState;
   readonly difficultyPreference: DifficultyPreference;
-  /** How many quests to offer. */
+  /** How many quests to offer, subject to the workload budget. */
   readonly count: number;
+  /** Minutes already committed today (accepted/postponed/completed quests). Defaults to 0. */
+  readonly committedMinutes?: number;
+  /** How many primary quests are already committed today. Defaults to 0. */
+  readonly committedPrimaryCount?: number;
+  /** Whether a demanding/severe quest is already committed today. Defaults to false. */
+  readonly committedDemandingOrAbove?: boolean;
   /** Language for generated titles, descriptions and rationale. Defaults to Portuguese (ADR-0007). */
   readonly locale?: ContentLocale;
   /**
@@ -74,6 +87,8 @@ export interface GeneratedQuest {
    */
   readonly rationale: string;
   readonly score: number;
+  /** Present only for a Daily Protocol template — see `objectives.ts`. */
+  readonly objectives?: ReadonlyArray<Omit<ObjectiveTemplateDefinition, 'labelPt' | 'unitPt'>>;
 }
 
 const DIFFICULTY_ORDER: readonly Difficulty[] = [
@@ -111,34 +126,60 @@ export function generateQuests(context: GenerationContext): GeneratedQuest[] {
   }));
   jittered.sort((a, b) => b.score - a.score);
 
+  const budget = computeDailyWorkloadBudget({
+    availableMinutes: context.availableMinutes,
+    recoveryState: context.recoveryState,
+    committedMinutes: context.committedMinutes ?? 0,
+    committedPrimaryCount: context.committedPrimaryCount ?? 0,
+    committedDemandingOrAbove: context.committedDemandingOrAbove ?? false,
+  });
+  const maxCount = Math.min(context.count, budget.maxNewPrimary);
+  const isDemandingOrAbove = (d: Difficulty): boolean => d === 'demanding' || d === 'severe';
+  // The cap must apply to what the user will actually see: difficulty
+  // calibration (preference, recovery) can push a template up or down a
+  // step, so the pre-calibration template difficulty is not a safe proxy.
+  const finalDifficulty = (entry: (typeof jittered)[number]): Difficulty =>
+    calibrateDifficulty(entry.template.difficulty, context);
+
   const selected: typeof jittered = [];
   const usedDomains = new Set<Domain>();
   let allocatedMinutes = 0;
-  const budget = workloadBudget(context);
+  let demandingSelected = 0;
+
+  const fitsBudget = (entry: (typeof jittered)[number]): boolean => {
+    if (allocatedMinutes + entry.template.estimatedMinutes > budget.remainingMinutes) return false;
+    if (isDemandingOrAbove(finalDifficulty(entry)) && demandingSelected >= budget.maxNewDemanding) {
+      return false;
+    }
+    return true;
+  };
+
+  const take = (entry: (typeof jittered)[number]): void => {
+    selected.push(entry);
+    usedDomains.add(entry.template.domain);
+    allocatedMinutes += entry.template.estimatedMinutes;
+    if (isDemandingOrAbove(finalDifficulty(entry))) demandingSelected += 1;
+  };
 
   for (const entry of jittered) {
-    if (selected.length >= context.count) break;
+    if (selected.length >= maxCount) break;
 
     // Diversity: one quest per domain per day. Breadth is what the progression
     // model rewards, so generation should not fight it.
     if (usedDomains.has(entry.template.domain)) continue;
+    if (!fitsBudget(entry)) continue;
 
-    if (allocatedMinutes + entry.template.estimatedMinutes > budget) continue;
-
-    selected.push(entry);
-    usedDomains.add(entry.template.domain);
-    allocatedMinutes += entry.template.estimatedMinutes;
+    take(entry);
   }
 
-  // If diversity left us short, relax it — but never the time budget, which is
-  // a promise about the user's actual day.
-  if (selected.length < context.count) {
+  // If diversity left us short, relax it — but never the time budget or the
+  // demanding-quest cap, both of which are promises about the user's actual day.
+  if (selected.length < maxCount) {
     for (const entry of jittered) {
-      if (selected.length >= context.count) break;
+      if (selected.length >= maxCount) break;
       if (selected.includes(entry)) continue;
-      if (allocatedMinutes + entry.template.estimatedMinutes > budget) continue;
-      selected.push(entry);
-      allocatedMinutes += entry.template.estimatedMinutes;
+      if (!fitsBudget(entry)) continue;
+      take(entry);
     }
   }
 
@@ -156,6 +197,7 @@ export function generateQuests(context: GenerationContext): GeneratedQuest[] {
       steps: content.steps,
       rationale: reasons.join(' '),
       score: Number(score.toFixed(4)),
+      ...(content.objectives ? { objectives: content.objectives } : {}),
     };
   });
 }
@@ -166,6 +208,13 @@ export function generateQuests(context: GenerationContext): GeneratedQuest[] {
 
 function passesHardFilters(template: QuestTemplate, context: GenerationContext): boolean {
   if (context.excludedDomains.includes(template.domain)) return false;
+
+  // Hard duplicate/cooldown control (ADR-0010): a template already active —
+  // detected, offered, accepted, or postponed — must not be regenerated as a
+  // second independent quest. This is a deterministic content fingerprint,
+  // not a similarity heuristic: generation is entirely template-based, so
+  // two quests sharing a template id are the same content by construction.
+  if (context.excludedTemplateIds?.includes(template.id)) return false;
 
   // Never propose loading an area the user has flagged as injured.
   if (template.bodyAreas && context.injuredAreas.length > 0) {
@@ -184,24 +233,6 @@ function passesHardFilters(template: QuestTemplate, context: GenerationContext):
   if (template.estimatedMinutes > context.availableMinutes) return false;
 
   return true;
-}
-
-/**
- * Total minutes that may be proposed today.
- *
- * Deliberately below the full available time: filling every free minute is how
- * a tool becomes an obligation, and it leaves no room for the user's own plans.
- */
-function workloadBudget(context: GenerationContext): number {
-  const base = context.availableMinutes * 0.75;
-  switch (context.recoveryState) {
-    case 'low':
-      return base * 0.5;
-    case 'moderate':
-      return base * 0.8;
-    default:
-      return base;
-  }
 }
 
 // ---------------------------------------------------------------------------

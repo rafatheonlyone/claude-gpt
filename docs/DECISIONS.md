@@ -196,3 +196,145 @@ evidence system in `docs/DATA_MODEL.md`, which remains scoped to the mastery mil
 `quests.status` (repositories, dashboard queries, the Architect snapshot) must account for `detected`
 being excluded from user-facing lists until presented. Migration tests cover the rebuild against a
 populated migration-001 database to confirm no row is lost or reordered.
+
+## ADR-0009 — Generation integrity: idempotent locking and a persisted workload budget
+
+**Status:** Accepted — 2026-07-20
+**Context:** A real development database, inspected while investigating a report of a "21 quests /
+1,190 minutes" day, showed 21 quest rows inserted across **seven near-identical batches within 22
+milliseconds**. The cause was `ensureTodayQuests`: a plain "read `getQuestsForDate`, and if empty,
+generate" sequence. Because that is two separate `await` boundaries, several UI components mounting
+at once — the shell's cinematic-encounter queue, Home, and Today all call into it independently on
+mount — could each observe "no quests yet" before any of them finished inserting, and each then
+generated its own batch. This was a correctness bug, not a workload-tuning problem: no amount of
+adjusting how many quests a single generation call proposes fixes a race that calls generation
+multiple times for the same day. Separately, neither `generateForDate` nor `recalibrateToday` ever
+accounted for quests already committed to a day (accepted, postponed, completed) — a manual
+recalibration, or in principle any second legitimate generation call, could keep adding a fixed count
+on top of whatever already existed, with no ceiling.
+
+**Decision:** `daily_generation_locks` (migration 003) gives every caller of `ensureTodayQuests` one
+row to race for via `INSERT OR IGNORE`; only the caller whose insert actually lands (`changes = 1`)
+proceeds to generate, and every other caller polls briefly for that quest to land rather than
+generating an independent batch or flashing an empty day. `src/core/quests/workload-budget.ts`
+introduces `computeDailyWorkloadBudget`, a single pure function used both by the generator (to cap
+what it proposes) and by `generateForDate`/`recalibrateToday` (which now query
+`getCommittedWorkload` first and feed it in) — so the ceiling on a day's total effort is a real
+function of what already exists, not a number handed to `generateQuests` blindly. The budget also
+caps primary quests at 3–5 and demanding/severe quests at one per day by default, calibrated
+defaults rather than claimed universal truths. `daily_generation_plans` persists the budget breakdown
+itself (available/planned/remaining minutes, mandatory/optional counts, overload flag) so it survives
+recalibration and is explainable after a restart, not only at the moment of generation.
+
+**Consequences:** `GenerationContext` gained optional `committedMinutes`/`committedPrimaryCount`/
+`committedDemandingOrAbove` fields, defaulting to zero so every existing test and caller is
+unaffected. A regression test (`tests/vertical-slice.test.ts`, "never generates duplicate batches
+when several callers race on first load") reproduces the exact concurrency shape and was verified to
+fail without the lock before the fix landed. The lock only guards *implicit* generation
+(`ensureTodayQuests`); `recalibrateToday` is a deliberate user action and does not additionally
+acquire it, which is an accepted residual gap — a double-click race there is far less likely and far
+less severe than the automatic-mount race this ADR fixes.
+
+## ADR-0010 — Duplicate and repetition control: template id as a deterministic fingerprint
+
+**Status:** Accepted — 2026-07-20
+**Context:** The same database that revealed the concurrency race (ADR-0009) also showed the same
+handful of templates repeated many times — "Entregue uma Funcionalidade" seven times, "Circuito de
+Manejo de Bola" four times — because nothing stopped the same template from being regenerated while
+an earlier copy was still sitting undecided. The generator's existing `recentTemplateIds` scoring
+only *penalises* recent reuse; with a small template pool for a given domain and strong goal
+alignment, the penalty was not always enough to prevent an outright repeat within the same day.
+Separately, `quests.template_id` was never persisted on the row itself — only inside the JSON
+payload of the `QuestGenerated` event — so "is this template already active" was a matter of parsing
+event history rather than an indexed column.
+
+**Decision:** Migration 003 adds `quests.template_id` as a plain, indexed column. Because generation
+is entirely template-based (no freeform AI content yet), a template id is already a deterministic
+content fingerprint by construction — two quests sharing one are the same generated content, full
+stop, with no similarity heuristic or hashing needed. `Repositories.getActiveTemplateIds` returns
+every template id the user currently has `detected`/`offered`/`accepted`/`postponed` (i.e. not yet
+finally decided), and `generateForDate` passes this to the generator as a new hard filter
+(`excludedTemplateIds`) — a template already live is removed from the candidate pool entirely, not
+merely down-ranked, consistent with how schedule feasibility and safety already work as hard filters
+rather than scores. For pre-existing duplicates (including rows from before `template_id` existed),
+`findDuplicateGeneratedQuests` groups by `(template_id, due_date)` — falling back to `(title,
+due_date)` when `template_id` is `NULL` — among only `detected`/`offered`/`postponed` rows, keeps the
+most recent copy, and reports the rest as redundant. `repairDuplicateQuests` archives them (migration
+004 adds an `archived` status) rather than deleting them, and `SystemService` exposes both a
+preview-only call and the applying call separately so the UI always shows what will change before
+anything does, per `CLAUDE.md`'s prohibition on silently altering a user's history. Accepted,
+completed, rejected, expired and user-created (`source = 'user'`) quests are never candidates for
+either the hard filter or the repair.
+
+**Consequences:** `getAllQuests` now excludes `archived` by default alongside the existing
+`detected` exclusion, with an explicit status filter still able to reach it (the Missions "Archived"
+grouping does this). A repeated template legitimately recurring across different days — the normal
+case for a `repeatable` template — is unaffected, since the fingerprint includes the date. The
+one-off maintenance run against the real development database (documented in `docs/CHANGELOG.md`)
+archived 15 of 27 accumulated duplicate rows, leaving 6 genuinely distinct quests.
+
+## ADR-0011 — Cinematic presentation budget: one modal per session
+
+**Status:** Accepted — 2026-07-20
+**Context:** `useQuestEncounterQueue` queued every `detected` quest behind its own modal encounter,
+so a day with several newly generated quests — most visibly the batch right after onboarding —
+could present multiple full-screen dialogs back to back. `docs/DESIGN_SYSTEM.md` §10 already
+specified "at most one cinematic interruption per session unless the user opts into more," but
+nothing enforced it; the previous session's `CURRENT_STATE.md` recorded this honestly as a known gap.
+
+**Decision:** The hook now tracks whether the session's one modal slot has been spent
+(`sessionBudgetSpent`, a ref so it survives re-renders without re-triggering effects). The first
+`detected` quest of a session is shown as the modal encounter — full or compact variant, by
+significance, unchanged from before. Every other quest, whether present at that moment or detected
+later in the same session, is presented silently (marked `offered`, so it is immediately visible on
+Today/Missions) and counted in a `preparedCount` surfaced as a one-line dismissible banner in the
+shell ("N missões adicionais foram preparadas") linking to Missões for review, rather than becoming a
+second dialog. `questEncounterMode = 'off'` (Settings' "Silent" option) is unchanged: everything is
+presented immediately with no modal at all.
+
+**Consequences:** `QuestEncounterQueueState` gained `preparedCount` and `dismissPreparedSummary`.
+This is the first React hook in the codebase covered by an automated test
+(`useQuestEncounterQueue.test.tsx`, using `@testing-library/react` and a jsdom environment enabled
+per-file via `@vitest-environment jsdom`) rather than only by manual verification — a small step
+against the "no end-to-end UI tests" gap recorded in `docs/TESTING.md`.
+
+## ADR-0012 — Daily Protocol as a quest with first-class objectives, calibrated to a physical baseline
+
+**Status:** Accepted — 2026-07-20
+**Context:** The milestone brief asked for "Daily Protocol" as a first-class concept: one daily
+mission with several measurable objectives (push-ups, squats, focused study minutes, and so on)
+instead of many single-purpose quests, explicitly modelled on the satisfying clarity of a
+progression-fantasy daily mission without copying any protected work's text, layout or assets. It
+also required that any prescribed physical quantity come from the user's own baseline, never a fixed
+extreme benchmark ("never automatically prescribe 100 push-ups, 100 squats, a 10 km run").
+
+**Decision:** A Daily Protocol is not a new entity — it is a quest (`quest_type = 'daily_protocol'`,
+added to `QUEST_TYPES`) whose content is several `quest_objectives` rows (migration 005) instead of
+free-text steps. This deliberately reuses the entire existing quest lifecycle (accept, complete,
+persist, restart-restore, XP award, history) rather than building a parallel entity and duplicating
+all of that. The objective kind enum
+(`repetitions`/`duration_seconds`/`distance_meters`/`quantity`/`checklist`/`numeric_score`/
+`percentage`/`binary`) is deliberately smaller than the milestone's twelve enumerated types — see
+`src/core/quests/objectives.ts` for why several of the twelve reduce to the same progress shape.
+`protocolProgress` computes completion from mandatory objectives only, so an undone optional one
+never blocks or dilutes completion — the same principle already applied to optional workload
+elsewhere. Physical objective targets are calibrated at generation time via `calibratedTarget`: 80%
+of a self-reported *comfortable* capacity (`physical_baseline`, migration 005, editable at any time
+from Settings, never a one-time onboarding fact), or a conservative default when no baseline is set.
+80%, not 100%, is deliberate — a daily protocol is meant to be repeatable, not a one-off maximal
+test. One template, `protocol.foundation_cycle`, ships as the concrete proof of the model; the
+generator selects and calibrates it exactly like any other template, competing on the same
+scoring/diversity/budget rules from ADR-0009 rather than a separate assembly step.
+
+**Consequences:** `QuestDetail` gained an `objectives` array; `QuestDetailPanel` shows an objective
+checklist with independent progress controls (`ObjectiveList`) in place of the steps list whenever
+objectives are present, and `SystemService.completeQuest`'s existing `completion` fraction parameter
+— unchanged — is how a protocol's partial objective completion translates into partial XP, reusing
+the progression formula's existing completion factor rather than a new proportional-reward pipeline.
+**Explicitly deferred, and recorded in `docs/ROADMAP.md` rather than silently dropped:** the full
+weekly-routine/availability capture (school hours, training days, upcoming tests) that would let
+generation reason about *when* in the week a protocol fits, a dedicated Missions-page grouping
+redesign into the eight buckets the milestone specified, the user-created-quest authoring flow with
+deterministic Architect enhancement, and auto-deriving a quest's completion fraction from objective
+progress in the completion dialog UI (the mechanism works end-to-end today, but the user currently
+still chooses "full" or "partial" manually rather than the dialog computing it from objectives).

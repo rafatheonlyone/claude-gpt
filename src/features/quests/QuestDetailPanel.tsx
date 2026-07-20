@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { SystemService, QuestDetail, DashboardQuest } from '../../core/app/system-service';
+import { ObjectiveList } from './ObjectiveList';
 import { t, formatDate, formatDateTime, formatNumber } from '../../i18n';
 import './quest-detail-panel.css';
 
@@ -103,18 +104,22 @@ export function QuestDetailPanel({
         </p>
       </section>
 
-      <section className="quest-detail__section">
-        <h2 className="quest-detail__section-title">{t('questDetail.steps')}</h2>
-        {detail.steps.length > 0 ? (
-          <ol className="quest-detail__steps">
-            {detail.steps.map((step) => (
-              <li key={step.id}>{step.description}</li>
-            ))}
-          </ol>
-        ) : (
-          <p className="quest-detail__text quest-detail__text--muted">{t('questDetail.noSteps')}</p>
-        )}
-      </section>
+      {detail.objectives.length > 0 ? (
+        <ObjectiveList service={service} detail={detail} readOnly={settled} onChanged={setDetail} />
+      ) : (
+        <section className="quest-detail__section">
+          <h2 className="quest-detail__section-title">{t('questDetail.steps')}</h2>
+          {detail.steps.length > 0 ? (
+            <ol className="quest-detail__steps">
+              {detail.steps.map((step) => (
+                <li key={step.id}>{step.description}</li>
+              ))}
+            </ol>
+          ) : (
+            <p className="quest-detail__text quest-detail__text--muted">{t('questDetail.noSteps')}</p>
+          )}
+        </section>
+      )}
 
       {(detail.reflectionNote || detail.evidenceNote) && (
         <section className="quest-detail__section">

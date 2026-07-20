@@ -235,7 +235,12 @@ Non-negotiable, and treated as correctness rather than as a feature:
 
 A system that constantly interrupts is a system people mute and then ignore.
 
-- At most one cinematic interruption per session unless the user opts into more.
+- At most one cinematic interruption per session unless the user opts into more. **Implemented**
+  (ADR-0011, `useQuestEncounterQueue`): the first detected quest of a session is shown as a modal
+  encounter (full or compact, by significance); every other quest that session is presented silently
+  and summarised as a single dismissible line ("N missões adicionais foram preparadas") linking to
+  Missões, rather than becoming a second dialog. The "unless the user opts into more" half is
+  Settings' existing Cinematic/Compact/Silent presentation modes.
 - Standard achievements queue into a corner stack, maximum three visible.
 - Focus mode suppresses everything except explicit user-set timers.
 - Level-ups below level 10 celebrate briefly; the ceremony scales with genuine rarity.

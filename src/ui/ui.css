@@ -154,6 +154,11 @@
   opacity: 0.4;
 }
 
+.quest-card__protocol-tag {
+  color: var(--accent-violet);
+  font-weight: 600;
+}
+
 /* One badge system for every quest state. Colour is always paired with the
    text label itself, never the sole carrier of status. */
 .quest-card__badge {

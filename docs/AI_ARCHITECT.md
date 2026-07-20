@@ -47,21 +47,30 @@ Deterministic, seeded, and testable. Its inputs:
 - Quest feedback history — accepted, rejected, rerolled, edited, reported
 - Injuries and limitations
 - Excluded categories
+- Templates already active for the user (`detected`/`offered`/`accepted`/`postponed`) — hard-excluded,
+  not merely down-ranked (ADR-0010)
+- What the day already has committed (accepted, postponed, completed quests) — the workload budget
+  is computed against this, not against available time alone (ADR-0009)
+- Physical baseline, when set, to calibrate a Daily Protocol's objective targets (ADR-0012)
 
 Its pipeline:
 
 ```
 candidates = templates matched to active goals and neglected domains
-           → hard filter: schedule feasibility, safety, injuries, exclusions
+           → hard filter: schedule feasibility, safety, injuries, exclusions, already-active template
            → score (see GAME_SYSTEMS §9)
-           → diversity pass: no two quests from one skill in a day
-           → workload clamp against recovery and recent volume
+           → diversity pass: no two quests from one domain in a day
+           → workload clamp against the committed-aware daily budget (GAME_SYSTEMS §9, ADR-0009)
            → select, with rationale recorded per quest
 ```
 
 Determinism matters: the same inputs and seed produce the same quests. That makes generation testable,
 debuggable, and honestly explainable — the rationale shown to the user is the actual decision input,
-not a story constructed afterwards.
+not a story constructed afterwards. The budget decision itself — available/planned/remaining minutes,
+mandatory/optional counts, why a day was clamped — is persisted (`daily_generation_plans`, ADR-0009)
+so it remains explainable after a restart, not only at the instant of generation. **This data is not
+yet surfaced anywhere in the UI** — no screen currently renders it as an Architect sentence the user
+can read. That display is tracked in `docs/ROADMAP.md` as the natural next step once it exists.
 
 ## 4. Provider abstraction
 

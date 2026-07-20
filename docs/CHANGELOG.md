@@ -5,6 +5,141 @@ the definition in `CLAUDE.md` — not when a placeholder exists.
 
 ---
 
+## 2026-07-20 — Adaptive quest engine, Daily Protocols, generation integrity
+
+Triggered by inspecting the real application and its real database rather than
+trusting completion labels, as instructed: the quest system was not yet usable
+for daily driving. This session fixed the root causes and shipped the first
+real slice of adaptive planning.
+
+### The bugs, as found
+
+- **21 quests generated for one day, 1,190 minutes of proposed work.** The
+  real cause: `ensureTodayQuests` was a plain "check then generate" — two
+  separate `await` steps — so several UI components mounting at once (the
+  shell's cinematic-encounter queue, Home, Today) could each observe "no
+  quests yet" before any of them finished inserting, and each generated its
+  own batch. The database showed 21 rows inserted across **7 batches within
+  22 milliseconds**. Not a workload-tuning problem — a concurrency bug.
+- **The same templates repeated many times** ("Entregue uma Funcionalidade"
+  ×7, "Circuito de Manejo de Bola" ×4) — a direct consequence of the race:
+  each racing batch independently re-scored and often re-picked the same
+  top-aligned templates.
+- **`domain.physical`, `domain.technical`, `rank.dormant` rendered literally**
+  in the shipped Portuguese and English UI. Root cause: those keys were never
+  added to *either* catalogue, so the existing en/pt-BR parity test passed —
+  parity only catches asymmetric coverage, not a key missing from both.
+- **The cinematic queue could present many dialogs in a row** — every
+  `detected` quest queued behind its own modal, contradicting
+  `docs/DESIGN_SYSTEM.md` §10's stated one-cinematic-per-session budget,
+  which was recorded as a known gap in the previous session's `CURRENT_STATE.md`.
+
+### Generation integrity (ADR-0009)
+
+- `daily_generation_locks` (migration 003): an idempotency primitive claimed
+  with `INSERT OR IGNORE` so exactly one of several racing callers generates
+  for a date; everyone else polls briefly for that quest to land instead of
+  generating an independent batch.
+- `src/core/quests/workload-budget.ts`: a real daily workload budget —
+  available time × recovery-adjusted utilisation, minus whatever the day
+  already committed to (accepted/postponed/completed quests) — used by both
+  the generator (as a hard cap during selection, not a score) and by
+  `recalibrateToday` (which now reads committed workload before adding
+  anything, so repeated recalibration can no longer stack a fixed count on
+  top of an already-full day). Calibrated defaults: 3–5 primary quests, at
+  most one demanding/severe quest, both easily retuned constants, not claimed
+  universal truths.
+- `daily_generation_plans` persists the budget breakdown itself so it remains
+  explainable after a restart.
+
+### Duplicate and repetition control (ADR-0010)
+
+- `quests.template_id` (migration 003) is now a real, indexed column —
+  previously only recoverable by parsing event-log JSON. Because generation
+  is entirely template-based, a template id is already a deterministic
+  content fingerprint; no similarity heuristic was needed.
+- The generator hard-excludes any template already `detected`/`offered`/
+  `accepted`/`postponed` for the user, rather than merely down-ranking recent
+  reuse via the existing `variety` score term.
+- `archived` status (migration 004) plus a preview-then-repair maintenance
+  flow (`previewDuplicateQuestRepair`/`repairDuplicateQuests`, surfaced in
+  Settings) identifies redundant generated duplicates — grouped by
+  `(template_id, due_date)`, falling back to `(title, due_date)` for rows
+  from before `template_id` existed — keeps the most recent copy, and
+  archives the rest. Never touches accepted, completed, rejected, expired or
+  user-created quests. Nothing is ever deleted.
+- Run against the real development database: 21 accumulated duplicates found,
+  15 archived, leaving 6 genuinely distinct quests (1 accepted, 5 postponed) —
+  down from the reported 21-quest, 1,190-minute day.
+
+### Cinematic presentation budget (ADR-0011)
+
+- `useQuestEncounterQueue` now shows at most one modal encounter per session
+  (full or compact, by significance); every other detected quest is presented
+  silently and counted in a dismissible "N missões adicionais foram
+  preparadas" banner linking to Missões, instead of becoming a second dialog.
+  `questEncounterMode = 'off'` (Settings' Silent option) is unchanged.
+- The first automated React test in the project
+  (`useQuestEncounterQueue.test.tsx`), using `@testing-library/react` and a
+  per-file jsdom environment — `@testing-library/react`/jsdom were already
+  installed but unwired; `vite.config.ts`'s test glob now includes `.test.tsx`.
+
+### Daily Protocol and first-class objectives (ADR-0012)
+
+- A Daily Protocol is a quest (`quest_type = 'daily_protocol'`) whose content
+  is several independently-progressable `quest_objectives` (migration 005)
+  instead of free-text steps — reusing the entire existing quest lifecycle
+  rather than a parallel entity.
+- `src/core/quests/objectives.ts`: numeric objectives (repetitions, duration,
+  distance, quantity, score, percentage) and zero/one objectives (checklist,
+  binary); a protocol's completion is driven by mandatory objectives only, so
+  an undone optional one never blocks it.
+- `physical_baseline` (migration 005): editable at any time from Settings,
+  self-reported *comfortable* capacity (push-ups, squats, plank seconds,
+  training days/week). Physical objective targets calibrate to 80% of the
+  relevant baseline value — sustainable, never a fixed extreme — falling back
+  to a conservative default when unset. A template-level test asserts no
+  baseline-linked objective ever carries a fixed numeric target in the
+  template itself, the exact failure mode the milestone forbade (100
+  push-ups, 100 squats, a 10 km run as defaults).
+  One template, `protocol.foundation_cycle`, ships as the concrete proof of
+  the model.
+- `QuestDetailPanel` shows an objective checklist (`ObjectiveList`) with
+  independent progress controls in place of the steps list whenever
+  objectives are present. `QuestCard` marks protocol quests with a small tag.
+
+### Localization fix
+
+- Added the missing `domain.*` (8 entries) and `rank.*` (8 entries) to both
+  catalogues, using natural Brazilian Portuguese (Físico, Acadêmico,
+  Adormecido, ...) and confirmed against a real launch of the app.
+- Added a dedicated leak-prevention test that enumerates every
+  dynamically-interpolated key space actually used in the UI against the real
+  `Domain`/`Rank`/etc. value sets, so a key missing from *both* catalogues
+  fails the build instead of shipping.
+
+### Validation
+
+`npm run typecheck`, `lint` (zero warnings), `test` (247 tests across 11
+files, up from 140), `build`, and `cargo build` all pass. The real Tauri
+desktop app was launched twice — once against a database migrated and
+repaired by a one-off script (after correcting a self-inflicted checksum
+mismatch from that script omitting SQL comments present in the real
+migration file, which the tamper-detection system correctly caught), and
+once as a from-scratch launch — and screenshotted directly (`PrintWindow`),
+confirming `ACADÊMICO`/`Adormecido` render correctly and the dashboard shows
+one reasonable quest instead of the previous duplicate pile.
+
+### Known incomplete, recorded honestly
+
+Full weekly routine/availability capture (school hours, training days,
+upcoming tests), the Missions page's eight-bucket grouping redesign, the
+user-created-quest authoring flow with Architect enhancement, auto-deriving a
+quest's completion fraction from objective progress in the completion
+dialog, and an Architect-facing plain-language rendering of the persisted
+generation plan are all specified, tracked in `docs/ROADMAP.md`, and not yet
+built. See ADR-0012's consequences section for the reasoning behind each.
+
 ## 2026-07-20 — Brazilian Portuguese localization and multi-page desktop shell
 
 A prior session's work was recovered from an interrupted checkpoint (`WIP:

@@ -1,6 +1,7 @@
 import type { Domain, QuestType } from '../domain/types';
 import type { Difficulty } from '../progression/xp';
 import type { ContentLocale } from '../content-locale';
+import type { ObjectiveKind } from './objectives';
 
 /**
  * Seed quest library for the deterministic rules engine.
@@ -41,6 +42,27 @@ export interface QuestTemplate {
   readonly intensity?: 'rest' | 'light' | 'moderate' | 'hard';
   /** Repeatable daily, or better spaced out. */
   readonly repeatable?: boolean;
+  /**
+   * When present, this template generates a Daily Protocol: one quest whose
+   * content is several measurable objectives rather than free-text steps.
+   * See `src/core/quests/objectives.ts`.
+   */
+  readonly objectives?: readonly ObjectiveTemplateDefinition[];
+}
+
+export interface ObjectiveTemplateDefinition {
+  readonly kind: ObjectiveKind;
+  readonly label: string;
+  readonly labelPt: string;
+  /** Fixed target. Omit (or set `null`) when `baselineKey` should calibrate it instead. */
+  readonly target: number | null;
+  readonly unit?: string;
+  readonly unitPt?: string;
+  readonly optional?: boolean;
+  /** Calibrate the target from the user's physical baseline instead of using `target` directly. */
+  readonly baselineKey?: 'pushups' | 'squats' | 'plank';
+  /** Used when `baselineKey` is set but the user has not recorded that baseline. */
+  readonly conservativeDefault?: number;
 }
 
 /** Localized display content for a template, resolved from the raw fields. */
@@ -49,18 +71,34 @@ export interface LocalizedQuestContent {
   readonly description: string;
   readonly purpose: string;
   readonly steps: readonly string[];
+  readonly objectives?: ReadonlyArray<Omit<ObjectiveTemplateDefinition, 'labelPt' | 'unitPt'>>;
 }
 
 export function localizeTemplate(
   template: QuestTemplate,
   locale: ContentLocale,
 ): LocalizedQuestContent {
+  const objectives = template.objectives?.map((objective) => ({
+    kind: objective.kind,
+    label: locale === 'en' ? objective.label : objective.labelPt,
+    target: objective.target,
+    ...(objective.unit || objective.unitPt
+      ? { unit: locale === 'en' ? objective.unit : objective.unitPt }
+      : {}),
+    ...(objective.optional !== undefined ? { optional: objective.optional } : {}),
+    ...(objective.baselineKey !== undefined ? { baselineKey: objective.baselineKey } : {}),
+    ...(objective.conservativeDefault !== undefined
+      ? { conservativeDefault: objective.conservativeDefault }
+      : {}),
+  }));
+
   if (locale === 'en') {
     return {
       title: template.title,
       description: template.description,
       purpose: template.purpose,
       steps: template.steps,
+      ...(objectives ? { objectives } : {}),
     };
   }
   return {
@@ -68,6 +106,7 @@ export function localizeTemplate(
     description: template.descriptionPt,
     purpose: template.purposePt,
     steps: template.stepsPt,
+    ...(objectives ? { objectives } : {}),
   };
 }
 
@@ -884,6 +923,93 @@ export const QUEST_TEMPLATES: readonly QuestTemplate[] = [
       'Coma em intervalos regulares',
       'Mantenha água disponível',
       'Anote sua energia ao longo do dia',
+    ],
+  },
+  // -------------------------------------------------------- daily protocol
+  {
+    id: 'protocol.foundation_cycle',
+    title: 'Foundation Cycle',
+    titlePt: 'Ciclo de Fundamentos',
+    description:
+      'One daily protocol covering physical foundation work, mobility and focused study — measurable objectives instead of several separate quests.',
+    descriptionPt:
+      'Um protocolo diário cobrindo trabalho físico de base, mobilidade e estudo focado — objetivos mensuráveis em vez de várias missões separadas.',
+    purpose:
+      'A single structured protocol is easier to sustain than a scattered list, and every quantity here is calibrated to your own baseline rather than a fixed benchmark.',
+    purposePt:
+      'Um protocolo estruturado único é mais fácil de sustentar do que uma lista dispersa, e cada quantidade aqui é calibrada à sua própria referência, não a um padrão fixo.',
+    domain: 'physical',
+    questType: 'daily_protocol',
+    difficulty: 'moderate',
+    estimatedMinutes: 80,
+    tags: ['strength', 'calisthenics', 'mobility', 'focus', 'mathematics', 'programming'],
+    bodyAreas: ['chest', 'arms', 'core', 'legs'],
+    intensity: 'moderate',
+    repeatable: true,
+    steps: [
+      'Complete each objective at your own pace across the day',
+      'Update progress as you go rather than all at once',
+    ],
+    stepsPt: [
+      'Complete cada objetivo no seu próprio ritmo ao longo do dia',
+      'Atualize o progresso conforme avança, em vez de tudo de uma vez',
+    ],
+    objectives: [
+      {
+        kind: 'repetitions',
+        label: 'Push-ups',
+        labelPt: 'Flexões',
+        target: null,
+        unit: 'reps',
+        unitPt: 'repetições',
+        baselineKey: 'pushups',
+        conservativeDefault: 10,
+      },
+      {
+        kind: 'repetitions',
+        label: 'Squats',
+        labelPt: 'Agachamentos',
+        target: null,
+        unit: 'reps',
+        unitPt: 'repetições',
+        baselineKey: 'squats',
+        conservativeDefault: 15,
+      },
+      {
+        kind: 'duration_seconds',
+        label: 'Plank',
+        labelPt: 'Prancha',
+        target: null,
+        unit: 'seconds',
+        unitPt: 'segundos',
+        baselineKey: 'plank',
+        conservativeDefault: 30,
+      },
+      {
+        kind: 'quantity',
+        label: 'Mobility',
+        labelPt: 'Mobilidade',
+        target: 8,
+        unit: 'min',
+        unitPt: 'min',
+      },
+      {
+        kind: 'quantity',
+        label: 'Focused study',
+        labelPt: 'Estudo focado',
+        target: 30,
+        unit: 'min',
+        unitPt: 'min',
+      },
+      {
+        kind: 'quantity',
+        label: 'Programming',
+        labelPt: 'Programação',
+        target: 30,
+        unit: 'min',
+        unitPt: 'min',
+        optional: true,
+      },
     ],
   },
 ];

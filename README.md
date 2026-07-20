@@ -14,12 +14,15 @@ around one rule:
 ## Status
 
 The first vertical slice, a Brazilian-Portuguese-by-default localization layer,
-and a full multi-page desktop shell all work end to end:
+a full multi-page desktop shell, and an adaptive quest engine (workload
+budgeting, duplicate control, Daily Protocols with first-class objectives) all
+work end to end:
 
-**first launch → onboarding → quest generation → cinematic encounter → accept →
-complete → XP → level → achievement → persistence → restart → state restored**
+**first launch → onboarding → budget-aware quest generation → one cinematic
+encounter per session → accept → complete → XP → level → achievement →
+persistence → restart → state restored**
 
-140 tests passing. See [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for an
+247 tests passing. See [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) for an
 honest account of what works, what is partial, and what is specified but not yet
 built.
 

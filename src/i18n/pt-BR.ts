@@ -192,6 +192,28 @@ export const ptBR: Messages = {
     recommendationTitle: 'Recomendação do Arquiteto',
   },
 
+  domain: {
+    physical: 'Físico',
+    academic: 'Acadêmico',
+    technical: 'Técnico',
+    mental: 'Mental',
+    creative: 'Criativo',
+    social: 'Social',
+    financial: 'Financeiro',
+    recovery: 'Recuperação',
+  },
+
+  rank: {
+    dormant: 'Adormecido',
+    threshold: 'Limiar',
+    emergent: 'Emergente',
+    ascendant: 'Ascendente',
+    vanguard: 'Vanguarda',
+    paragon: 'Exemplar',
+    sovereign: 'Soberano',
+    transcendent: 'Transcendente',
+  },
+
   quests: {
     title: 'Missões',
     searchPlaceholder: 'Buscar missões',
@@ -262,6 +284,7 @@ export const ptBR: Messages = {
     milestone: 'Marco',
     experiment: 'Experimento do Arquiteto',
     user: 'Criada pelo usuário',
+    daily_protocol: 'Protocolo diário',
   },
 
   questDetail: {
@@ -282,6 +305,13 @@ export const ptBR: Messages = {
     reflection: 'Reflexão',
     evidence: 'Evidência',
     completedAt: 'Concluída em {date}',
+    objectives: 'Objetivos',
+    objectivesProgress: '{completed} / {total} objetivos',
+    objectiveOptional: 'Opcional',
+    objectiveDone: 'Concluído',
+    objectiveMarkDone: 'Marcar como feito',
+    objectiveUpdate: 'Atualizar',
+    objectiveSave: 'Salvar',
   },
 
   questEncounter: {
@@ -301,6 +331,10 @@ export const ptBR: Messages = {
     rewardsLabel: 'Recompensa',
     queueRemaining: 'mais {count} aguardando',
     dismissHint: 'Pressione esc para decidir depois',
+    preparedSummaryOne: '1 missão adicional foi preparada.',
+    preparedSummaryMany: '{count} missões adicionais foram preparadas.',
+    preparedSummaryReview: 'Revisar em Missões',
+    preparedSummaryDismiss: 'Dispensar',
   },
 
   completion: {
@@ -423,6 +457,25 @@ export const ptBR: Messages = {
     backupNowButton: 'Fazer backup agora',
     backupSuccess: 'Backup salvo em {path}',
     backupError: 'Não foi possível concluir o backup.',
+    maintenanceSection: 'Manutenção',
+    maintenanceBody:
+      'Verifique missões geradas como duplicatas umas das outras — o mesmo conteúdo, no mesmo dia, nunca decidido. Nada é excluído: duplicatas são arquivadas, e suas decisões e seu histórico são sempre preservados.',
+    maintenanceCheckButton: 'Verificar missões duplicadas',
+    maintenanceNoneFound: 'Nenhuma duplicata encontrada.',
+    maintenancePreviewSummary: '{count} missões redundantes encontradas. Revisando antes de qualquer mudança:',
+    maintenanceGroupLine: '{title} — {count} cópias redundantes',
+    maintenanceRepairButton: 'Arquivar duplicatas redundantes',
+    maintenanceRepaired: '{count} missões redundantes arquivadas.',
+    baselineSection: 'Referência física',
+    baselineBody:
+      'Opcional, editável a qualquer momento. Os objetivos físicos do Protocolo Diário são calibrados a 80% do que você informar aqui — sustentável, não máximo. Deixe um campo em branco para usar um padrão conservador.',
+    baselinePushups: 'Flexões confortáveis em uma série',
+    baselineSquats: 'Agachamentos confortáveis em uma série',
+    baselinePlank: 'Prancha confortável (segundos)',
+    baselineFrequency: 'Dias de treino por semana',
+    baselineNotSet: 'Não definido',
+    baselineSave: 'Salvar referência',
+    baselineSaved: 'Referência salva.',
     aboutSection: 'Sobre',
     versionLabel: 'Versão',
     schemaVersionLabel: 'Esquema de dados',

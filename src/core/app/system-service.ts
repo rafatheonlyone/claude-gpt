@@ -4,10 +4,19 @@ import type { Difficulty, EvidenceLevel } from '../progression/xp';
 import type { ContentLocale } from '../content-locale';
 import { DEFAULT_CONTENT_LOCALE } from '../content-locale';
 import { Migrator } from '../persistence/migrator';
-import { Repositories, type QuestRecord, type QuestListFilter, type QuestFeedbackRecord } from './repositories';
+import {
+  Repositories,
+  type QuestRecord,
+  type QuestListFilter,
+  type QuestFeedbackRecord,
+  type ObjectiveRecord,
+  type PhysicalBaselineRecord,
+} from './repositories';
 import { calculateXpAward, type XpAwardResult } from '../progression/xp';
 import { levelFromTotalXp, LEVEL_FORMULA_VERSION } from '../progression/levels';
 import { generateQuests, type DifficultyPreference, type RecoveryState } from '../quests/generator';
+import { computeDailyWorkloadBudget, MAXIMUM_DAILY_PRIMARY_QUESTS } from '../quests/workload-budget';
+import { isObjectiveComplete, calibratedTarget, type ObjectiveKind } from '../quests/objectives';
 import { evaluateAchievements, orderForPresentation } from '../achievements/engine';
 import { ACHIEVEMENTS, type AchievementDefinition } from '../achievements/definitions';
 import { APP_VERSION } from '../version';
@@ -59,6 +68,7 @@ export interface ProfileSummary {
 
 export interface QuestDetail extends DashboardQuest {
   readonly feedback: readonly QuestFeedbackRecord[];
+  readonly objectives: readonly ObjectiveRecord[];
 }
 
 export interface AchievementCatalogEntry {
@@ -77,6 +87,19 @@ export interface ArchitectSnapshot {
 export interface RecalibrationResult {
   readonly removed: number;
   readonly added: number;
+}
+
+export interface DuplicateQuestGroup {
+  readonly templateId: string;
+  readonly dueDate: string | null;
+  readonly title: string;
+  readonly keepId: string;
+  readonly redundantIds: readonly string[];
+}
+
+export interface DuplicateRepairPreview {
+  readonly groups: readonly DuplicateQuestGroup[];
+  readonly totalRedundant: number;
 }
 
 export interface DomainSummary {
@@ -325,6 +348,16 @@ export class SystemService {
    * Shared by `getDashboard` and `getPendingEncounters` so the encounter
    * queue works correctly regardless of which page happens to mount first —
    * the Shell hosts the queue independently of the Home/Today routes.
+   *
+   * Generation is guarded by `daily_generation_locks` (migration 003,
+   * ADR-0009): a plain "check then generate" is two separate async steps,
+   * and several UI components mounting at once (the shell's encounter queue,
+   * Home, Today) can each observe "no quests yet" before any of them
+   * finishes inserting. A real database inspected while building this fix
+   * had 21 quests inserted across 7 near-simultaneous batches from exactly
+   * this race. Only the caller whose `INSERT OR IGNORE` actually inserts the
+   * lock row proceeds to generate; everyone else waits briefly for that
+   * quest to land rather than generating a second independent batch.
    */
   private async ensureTodayQuests(date: string): Promise<QuestRecord[]> {
     const now = this.platform.clock.now().toISOString();
@@ -332,10 +365,25 @@ export class SystemService {
 
     let quests = await this.repos.getQuestsForDate(this.userId, date);
     if (quests.length === 0) {
-      await this.generateForDate(date);
-      quests = await this.repos.getQuestsForDate(this.userId, date);
+      const wonRace = await this.repos.tryAcquireGenerationLock(this.userId, date, now);
+      if (wonRace) {
+        await this.generateForDate(date);
+        quests = await this.repos.getQuestsForDate(this.userId, date);
+      } else {
+        quests = await this.waitForConcurrentGeneration(date);
+      }
     }
     return quests;
+  }
+
+  /** Polls briefly for another in-flight generation call to land, rather than flashing an empty day. */
+  private async waitForConcurrentGeneration(date: string): Promise<QuestRecord[]> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const quests = await this.repos.getQuestsForDate(this.userId, date);
+      if (quests.length > 0) return quests;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return this.repos.getQuestsForDate(this.userId, date);
   }
 
   private async withSteps(quests: readonly QuestRecord[]): Promise<DashboardQuest[]> {
@@ -352,31 +400,49 @@ export class SystemService {
 
   private async generateForDate(date: string, seedSuffix = ''): Promise<void> {
     const [prefs, locale] = await Promise.all([this.getPreferences(), this.getLocalePreference()]);
-    const [domainLastActive, recentTemplateIds] = await Promise.all([
+    const [domainLastActive, recentTemplateIds, committed, activeTemplateIds] = await Promise.all([
       this.repos.getDomainLastActive(this.userId),
       this.repos.recentTemplateIds(this.userId),
+      this.repos.getCommittedWorkload(this.userId, date),
+      this.repos.getActiveTemplateIds(this.userId),
     ]);
+
+    const availableMinutes = numberPref(prefs['availableMinutes'], 120);
+    const recoveryState = 'unknown' as RecoveryState;
+    const budget = computeDailyWorkloadBudget({
+      availableMinutes,
+      recoveryState,
+      committedMinutes: committed.minutes,
+      committedPrimaryCount: committed.primaryCount,
+      committedDemandingOrAbove: committed.demandingOrAbove,
+    });
 
     const generated = generateQuests({
       userId: this.userId,
       date,
-      availableMinutes: numberPref(prefs['availableMinutes'], 120),
+      availableMinutes,
       goals: stringArrayPref(prefs['goals']),
       domainLastActive,
       recentTemplateIds,
+      excludedTemplateIds: [...activeTemplateIds],
       completionRateByDomain: {},
       excludedDomains: stringArrayPref(prefs['excludedDomains']) as Domain[],
       injuredAreas: stringArrayPref(prefs['injuredAreas']),
-      recoveryState: 'unknown' as RecoveryState,
+      recoveryState,
       difficultyPreference: (prefs['difficultyPreference'] as DifficultyPreference) ?? 'balanced',
       locale,
-      count: 3,
+      count: MAXIMUM_DAILY_PRIMARY_QUESTS,
+      committedMinutes: committed.minutes,
+      committedPrimaryCount: committed.primaryCount,
+      committedDemandingOrAbove: committed.demandingOrAbove,
       // Spread rather than assigning `undefined`: exactOptionalPropertyTypes
       // treats an explicit undefined differently from an absent key.
       ...(seedSuffix ? { seedSuffix } : {}),
     });
 
     const now = this.platform.clock.now().toISOString();
+    const needsBaseline = generated.some((quest) => quest.objectives?.some((o) => o.baselineKey));
+    const baseline = needsBaseline ? await this.repos.getPhysicalBaseline(this.userId) : null;
 
     for (const quest of generated) {
       const questId = uuidv7(this.platform.clock.now().getTime());
@@ -386,8 +452,8 @@ export class SystemService {
           sql: `INSERT INTO quests
                   (id, user_id, title, description, purpose, quest_type, domain, difficulty,
                    estimated_minutes, status, due_date, generation_rationale, source,
-                   evidence_level, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'detected', ?, ?, 'rules', 'self_reported', ?, ?)`,
+                   evidence_level, created_at, updated_at, template_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'detected', ?, ?, 'rules', 'self_reported', ?, ?, ?)`,
           params: [
             questId,
             this.userId,
@@ -402,6 +468,7 @@ export class SystemService {
             quest.rationale,
             now,
             now,
+            quest.templateId,
           ],
         },
         ...quest.steps.map((step, index) => ({
@@ -427,7 +494,39 @@ export class SystemService {
       ];
 
       await this.platform.storage.transaction(statements);
+
+      if (quest.objectives && quest.objectives.length > 0) {
+        const objectiveRows = quest.objectives.map((objective, index) => ({
+          id: uuidv7(this.platform.clock.now().getTime()),
+          position: index,
+          kind: objective.kind,
+          label: objective.label,
+          target: objective.baselineKey
+            ? calibratedTarget(baselineValue(baseline, objective.baselineKey), objective.conservativeDefault ?? 10)
+            : objective.target,
+          unit: objective.unit ?? null,
+          optional: objective.optional ?? false,
+        }));
+        await this.repos.createObjectives(questId, objectiveRows, now);
+      }
     }
+
+    const newMinutes = generated.reduce((sum, q) => sum + q.estimatedMinutes, 0);
+    const newPrimary = generated.filter((q) => q.questType !== 'side').length;
+    await this.repos.saveGenerationPlan(
+      this.userId,
+      date,
+      {
+        availableMinutes,
+        budgetMinutes: budget.budgetMinutes,
+        plannedMinutes: committed.minutes + newMinutes,
+        mandatoryCount: committed.primaryCount + newPrimary,
+        optionalCount: generated.length - newPrimary,
+        overloaded: budget.overloaded,
+        breakdown: budget.reasons.map((reason) => ({ label: reason, detail: '' })),
+      },
+      now,
+    );
   }
 
   // -------------------------------------------------------------- quests
@@ -440,15 +539,43 @@ export class SystemService {
   async getQuestDetail(questId: string): Promise<QuestDetail | null> {
     const quest = await this.repos.getQuest(questId);
     if (!quest) return null;
-    const [steps, feedback] = await Promise.all([
+    const [steps, feedback, objectives] = await Promise.all([
       this.repos.getSteps(questId),
       this.repos.getQuestFeedback(questId),
+      this.repos.getObjectives(questId),
     ]);
     return {
       ...quest,
       steps: steps.map((s) => ({ id: s.id, description: s.description, optional: s.optional })),
       feedback,
+      objectives,
     };
+  }
+
+  /**
+   * Updates one objective's progress and, when it is now complete, stamps
+   * `completedAt`. Never touches the parent quest's own status — the user
+   * still explicitly completes the quest itself (via `completeQuest`),
+   * typically passing a `completion` fraction derived from
+   * `protocolProgress()` over these objectives.
+   */
+  async updateObjectiveProgress(objectiveId: string, current: number): Promise<void> {
+    const objective = await this.repos.getObjectiveById(objectiveId);
+    if (!objective) throw new Error(`objective not found: ${objectiveId}`);
+
+    const clamped = Math.max(0, current);
+    const completed = isObjectiveComplete({ kind: objective.kind as ObjectiveKind, target: objective.target, current: clamped });
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.updateObjectiveProgress(objectiveId, clamped, completed, now);
+  }
+
+  async getPhysicalBaseline(): Promise<PhysicalBaselineRecord | null> {
+    return this.repos.getPhysicalBaseline(this.userId);
+  }
+
+  async savePhysicalBaseline(baseline: PhysicalBaselineRecord): Promise<void> {
+    const now = this.platform.clock.now().toISOString();
+    await this.repos.savePhysicalBaseline(this.userId, baseline, now);
   }
 
   /**
@@ -526,6 +653,41 @@ export class SystemService {
     const afterCount = (await this.repos.getQuestsForDate(this.userId, date)).length;
 
     return { removed: removable.length, added: afterCount - survivingCount };
+  }
+
+  // ------------------------------------------------------- duplicate repair
+
+  /**
+   * Read-only preview of what `repairDuplicateQuests` would archive.
+   *
+   * Exists as its own call so the UI can show the user exactly what will
+   * change before anything happens (`CLAUDE.md`: never silently delete or
+   * alter meaningful user data). Nothing is written here.
+   */
+  async previewDuplicateQuestRepair(): Promise<DuplicateRepairPreview> {
+    const groups = await this.repos.findDuplicateGeneratedQuests(this.userId);
+    return {
+      groups,
+      totalRedundant: groups.reduce((sum, group) => sum + group.redundantIds.length, 0),
+    };
+  }
+
+  /**
+   * Archives redundant generated-quest duplicates: same template, same date,
+   * still undecided or postponed. The most recent copy in each group is
+   * kept untouched; the rest move to `archived`, which preserves the row
+   * and its full history rather than deleting it. Accepted, completed,
+   * rejected, expired and user-created quests are never candidates — see
+   * `Repositories.findDuplicateGeneratedQuests`.
+   */
+  async repairDuplicateQuests(): Promise<DuplicateRepairPreview> {
+    const preview = await this.previewDuplicateQuestRepair();
+    const redundantIds = preview.groups.flatMap((group) => group.redundantIds);
+    if (redundantIds.length > 0) {
+      const now = this.platform.clock.now().toISOString();
+      await this.repos.archiveQuests(redundantIds, now);
+    }
+    return preview;
   }
 
   /**
@@ -754,4 +916,19 @@ function numberPref(value: unknown, fallback: number): number {
 
 function stringArrayPref(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+function baselineValue(
+  baseline: PhysicalBaselineRecord | null,
+  key: 'pushups' | 'squats' | 'plank',
+): number | null {
+  if (!baseline) return null;
+  switch (key) {
+    case 'pushups':
+      return baseline.pushupsComfortable;
+    case 'squats':
+      return baseline.squatsComfortable;
+    case 'plank':
+      return baseline.plankSeconds;
+  }
 }

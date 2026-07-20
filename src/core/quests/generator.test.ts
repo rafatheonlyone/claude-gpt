@@ -198,6 +198,77 @@ describe('generateQuests — relevance', () => {
   });
 });
 
+describe('generateQuests — workload budget awareness', () => {
+  it('a normal day never proposes an impossible number of mandatory quests', () => {
+    // The exact real-world symptom this milestone exists to prevent: 21
+    // quests / 1,190 minutes generated for one day.
+    const quests = generateQuests(context({ count: 21, availableMinutes: 120 }));
+    expect(quests.length).toBeLessThanOrEqual(5);
+    const totalMinutes = quests.reduce((sum, q) => sum + q.estimatedMinutes, 0);
+    expect(totalMinutes).toBeLessThan(1140);
+  });
+
+  it('proposes nothing new once the day is already fully committed', () => {
+    const quests = generateQuests(
+      context({ count: 5, availableMinutes: 120, committedMinutes: 90, committedPrimaryCount: 3 }),
+    );
+    expect(quests).toHaveLength(0);
+  });
+
+  it('proposes fewer quests as more of the day is already committed', () => {
+    const fresh = generateQuests(context({ count: 5, availableMinutes: 240 }));
+    const partiallyCommitted = generateQuests(
+      context({ count: 5, availableMinutes: 240, committedMinutes: 120, committedPrimaryCount: 2 }),
+    );
+    expect(partiallyCommitted.length).toBeLessThanOrEqual(fresh.length);
+  });
+
+  it('never proposes a second demanding or severe quest once one is already committed', () => {
+    const quests = generateQuests(
+      context({
+        count: 8,
+        availableMinutes: 300,
+        difficultyPreference: 'harder',
+        committedDemandingOrAbove: true,
+      }),
+    );
+    for (const quest of quests) {
+      expect(['trivial', 'light', 'moderate']).toContain(quest.difficulty);
+    }
+  });
+
+  it('never selects more than one demanding or severe quest in a single fresh batch', () => {
+    const quests = generateQuests(
+      context({ count: 8, availableMinutes: 300, difficultyPreference: 'harder' }),
+    );
+    const demandingOrAbove = quests.filter((q) => q.difficulty === 'demanding' || q.difficulty === 'severe');
+    expect(demandingOrAbove.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('generateQuests — hard duplicate exclusion', () => {
+  it('never regenerates a template that is already active', () => {
+    const first = generateQuests(context({ count: 3 }));
+    const activeIds = first.map((q) => q.templateId);
+
+    const second = generateQuests(context({ count: 8, availableMinutes: 300, excludedTemplateIds: activeIds }));
+
+    for (const quest of second) {
+      expect(activeIds).not.toContain(quest.templateId);
+    }
+  });
+
+  it('still proposes something else when the top candidate is excluded', () => {
+    const first = generateQuests(context({ count: 1 }));
+    expect(first.length).toBeGreaterThan(0);
+    const topId = first[0]!.templateId;
+
+    const second = generateQuests(context({ count: 1, excludedTemplateIds: [topId] }));
+    expect(second.length).toBeGreaterThan(0);
+    expect(second[0]!.templateId).not.toBe(topId);
+  });
+});
+
 describe('generateQuests — difficulty calibration', () => {
   it('offers easier work when the preference is lighter', () => {
     const order = ['trivial', 'light', 'moderate', 'demanding', 'severe'];
@@ -208,6 +279,41 @@ describe('generateQuests — difficulty calibration', () => {
       qs.reduce((sum, q) => sum + order.indexOf(q.difficulty), 0) / Math.max(1, qs.length);
 
     expect(mean(lighter)).toBeLessThanOrEqual(mean(balanced));
+  });
+});
+
+describe('generateQuests — Daily Protocol selection', () => {
+  it('selects the Daily Protocol template when it is the only eligible physical-domain candidate', () => {
+    // Domain diversity means only one physical-domain template can be
+    // selected per day; excluding every other one makes selection of the
+    // protocol deterministic without depending on the scoring engine's
+    // relative weighting on a given run.
+    const otherPhysicalIds = QUEST_TEMPLATES.filter(
+      (t) => t.domain === 'physical' && t.id !== 'protocol.foundation_cycle',
+    ).map((t) => t.id);
+
+    const quests = generateQuests(
+      context({ count: 5, availableMinutes: 300, excludedTemplateIds: otherPhysicalIds }),
+    );
+
+    const protocol = quests.find((q) => q.templateId === 'protocol.foundation_cycle');
+    expect(protocol).toBeDefined();
+    expect(protocol?.questType).toBe('daily_protocol');
+    expect(protocol?.objectives?.length).toBeGreaterThan(1);
+  });
+
+  it('carries calibration metadata for physical objectives rather than a fixed number', () => {
+    const otherPhysicalIds = QUEST_TEMPLATES.filter(
+      (t) => t.domain === 'physical' && t.id !== 'protocol.foundation_cycle',
+    ).map((t) => t.id);
+    const quests = generateQuests(
+      context({ count: 5, availableMinutes: 300, excludedTemplateIds: otherPhysicalIds }),
+    );
+    const protocol = quests.find((q) => q.templateId === 'protocol.foundation_cycle');
+
+    const pushups = protocol?.objectives?.find((o) => o.baselineKey === 'pushups');
+    expect(pushups).toBeDefined();
+    expect(pushups?.target).toBeNull(); // calibrated later from the user's baseline, not fixed here
   });
 });
 

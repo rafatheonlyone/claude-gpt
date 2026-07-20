@@ -49,27 +49,58 @@ when something happened, the audit shows when it was recorded.
 
 ### Quests
 
-| Table            | Purpose                                                                                                     |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `quest_template` | Reusable definitions, including user-created and recurrence rules                                           |
-| `quest`          | An instance: status, difficulty, domain, skills, due date, steps, rewards, `generation_rationale`, `source` |
-| `quest_step`     | Ordered steps, optional flag, completion state                                                              |
-| `quest_chain`    | Chains and campaigns; ordering and unlock conditions                                                        |
-| `quest_feedback` | Accept / reject / reroll / edit / postpone / report, with reason. Feeds calibration                         |
+| Table                     | Purpose                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `quest_template`          | Reusable definitions, including user-created and recurrence rules                                           |
+| `quest` (`quests`)        | An instance: status, difficulty, domain, skills, due date, steps, rewards, `generation_rationale`, `source` |
+| `quest_step`              | Ordered steps, optional flag, completion state                                                              |
+| `quest_objective`         | Ordered, independently-progressable objectives on any quest — a Daily Protocol's actual content (ADR-0012)  |
+| `quest_chain`             | Chains and campaigns; ordering and unlock conditions                                                        |
+| `quest_feedback`          | Accept / reject / reroll / edit / postpone / report, with reason. Feeds calibration                         |
+| `daily_generation_lock`   | Idempotency primitive for a date's generation — the row's existence is the lock (ADR-0009)                  |
+| `daily_generation_plan`   | The workload-budget decision behind a date's plan, explainable after a restart (ADR-0009)                   |
+| `physical_baseline`       | Editable, self-reported comfortable capacity used to calibrate Daily Protocol objective targets (ADR-0012)  |
 
 `generation_rationale` is stored, not regenerated, so "why was this quest created?" is answered from
 the actual decision inputs rather than a plausible reconstruction after the fact.
 
-As implemented (migration 002, ADR-0008), `quests.status` is
-`detected | offered | accepted | completed | skipped | expired | rejected | postponed`. `detected`
-means the rules engine generated the quest but the cinematic encounter has not yet shown it to the
-user — this is a persisted state, not client-side session state, so a restart can never cause a
-quest to be re-presented as new. `presented_at` is stamped exactly once, the first time the quest is
-shown, whichever path shows it (the encounter or opening its detail view directly). `postponed` is
-distinct from `rejected`: the quest is retained, not discarded, recording that the user meant to
-decide later. `reflection_note` and `evidence_note` are free-text columns captured at completion —
+As implemented (migration 002, ADR-0008; migration 004, ADR-0010), `quests.status` is
+`detected | offered | accepted | completed | skipped | expired | rejected | postponed | archived`.
+`detected` means the rules engine generated the quest but the cinematic encounter has not yet shown
+it to the user — this is a persisted state, not client-side session state, so a restart can never
+cause a quest to be re-presented as new. `presented_at` is stamped exactly once, the first time the
+quest is shown, whichever path shows it (the encounter or opening its detail view directly).
+`postponed` is distinct from `rejected`: the quest is retained, not discarded, recording that the
+user meant to decide later. `archived` is distinct from both: it marks a redundant generated
+duplicate found by the repair flow below, retained (never deleted) but excluded from the default
+browsable list. `reflection_note` and `evidence_note` are free-text columns captured at completion —
 a deliberately small subset of the full structured evidence system described above, scoped to the
 mastery milestone (D-1/D-2) where evidence becomes load-bearing rather than optional colour.
+`template_id` (migration 003) records which template generated the quest; because generation is
+entirely template-based, this doubles as a deterministic duplicate fingerprint (ADR-0010) — no
+similarity heuristic is needed.
+
+**Generation integrity (migration 003, ADR-0009).** `daily_generation_locks` (`user_id`, `date`) is a
+pure concurrency primitive: its row's existence is the lock itself, claimed with `INSERT OR IGNORE`
+so exactly one of several racing callers proceeds to generate for a given date — see ADR-0009 for the
+real-database evidence that motivated it. `daily_generation_plans` persists the workload-budget
+decision behind a date's plan (available/budget/planned minutes, mandatory/optional counts, an
+overload flag, and a machine-readable reason breakdown) so the Architect can explain a day's plan
+after a restart, not only at the moment of generation.
+
+**Quest objectives and physical baseline (migration 005, ADR-0012).** `quest_objectives` attaches
+ordered, independently-progressable objectives to any quest — most commonly a Daily Protocol
+(`quest_type = 'daily_protocol'`) — rather than introducing a separate `daily_protocols` entity; the
+existing quest lifecycle, XP award and history apply to it unchanged. Each row has a `kind` (one of
+`repetitions`, `duration_seconds`, `distance_meters`, `quantity`, `checklist`, `numeric_score`,
+`percentage`, `binary` — see `src/core/quests/objectives.ts` for why this is smaller than a naive
+one-kind-per-milestone-example enumeration), a `target_value` (`NULL` for the zero/one
+checklist/binary kinds), a `current_value`, and an `optional` flag — an undone optional objective
+never blocks the protocol's overall completion. `physical_baseline` is one row per user, editable at
+any time from Settings, holding self-reported *comfortable* capacity (push-ups, squats, plank
+seconds, training days per week). Objective targets for baseline-linked objectives are calibrated to
+80% of the relevant baseline value at generation time — sustainable, never a fixed extreme
+benchmark — falling back to a conservative default when no baseline is set.
 
 ### Challenges and rewards
 

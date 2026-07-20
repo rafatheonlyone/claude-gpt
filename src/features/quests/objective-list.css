@@ -1,0 +1,108 @@
+.objective-list__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: var(--space-12);
+}
+
+.objective-list__progress {
+  color: var(--text-secondary);
+  font-size: var(--type-detail);
+}
+
+.objective-list__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.objective-list__item {
+  padding: var(--space-12);
+  border-radius: var(--radius-md);
+  border: var(--border-hairline);
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.objective-list__item[data-complete='true'] {
+  border-color: rgba(63, 207, 142, 0.35);
+  background: rgba(63, 207, 142, 0.06);
+}
+
+.objective-list__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.objective-list__label {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.objective-list__optional-tag {
+  font-size: var(--type-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 2px var(--space-8);
+  border-radius: var(--radius-pill);
+  border: var(--border-hairline);
+}
+
+.objective-list__toggle {
+  align-self: flex-start;
+}
+
+.objective-list__toggle[data-complete='true'] {
+  color: var(--state-positive);
+  border-color: rgba(63, 207, 142, 0.4);
+}
+
+.objective-list__numeric {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  flex-wrap: wrap;
+}
+
+.objective-list__track {
+  flex: 1;
+  min-width: 100px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(122, 160, 255, 0.1);
+  overflow: hidden;
+}
+
+.objective-list__fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--accent-deep), var(--state-positive));
+}
+
+.objective-list__count {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.objective-list__form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.objective-list__input {
+  width: 72px;
+  height: 32px;
+  padding: 0 var(--space-8);
+  border-radius: var(--radius-sm);
+  border: var(--border-hairline);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+}

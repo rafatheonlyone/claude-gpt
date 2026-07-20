@@ -41,6 +41,14 @@ export function QuestCard({
 
       <div className="quest-card__body">
         <div className="quest-card__meta">
+          {quest.questType === 'daily_protocol' && (
+            <>
+              <span className="quest-card__protocol-tag">{t('questType.daily_protocol')}</span>
+              <span className="quest-card__separator" aria-hidden="true">
+                ·
+              </span>
+            </>
+          )}
           <span className="quest-card__domain">{t(`domain.${quest.domain}`)}</span>
           <span className="quest-card__separator" aria-hidden="true">
             ·

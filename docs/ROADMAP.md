@@ -52,6 +52,22 @@ Configurações); the cinematic quest encounter with a persisted `detected` →
 `offered` lifecycle so restarts never re-present a quest (ADR-0008); every
 Settings control genuinely wired and persisted. See `CHANGELOG.md` 2026-07-20.
 
+## Phase C.6 — Adaptive quest engine, Daily Protocols, generation integrity ✅
+
+Fixed a real concurrency bug found by inspecting a live database (21 quests /
+1,190 minutes for one day, from 7 racing generation batches): idempotent
+per-date locking (ADR-0009), a committed-workload-aware daily budget capping
+primary quests at 3–5 and demanding quests at one by default, hard duplicate
+exclusion via template id as a deterministic fingerprint (ADR-0010), an
+`archived` status plus a preview-then-repair maintenance flow for pre-existing
+duplicates, a one-cinematic-per-session encounter budget with a prepared-count
+summary (ADR-0011), Daily Protocol as a quest with first-class objectives
+calibrated to an editable physical baseline (ADR-0012), and the
+`domain.*`/`rank.*` translation-key leaks (never actually in either catalogue,
+despite passing the existing parity test). 107 new tests, including a
+concurrency regression verified to fail without the fix. See `CHANGELOG.md`
+2026-07-20 (adaptive quest engine).
+
 ## Phase D — Expansion ⬜
 
 Ordered by dependency and value. D-1 is the current recommended task.
@@ -88,8 +104,13 @@ Ordered by dependency and value. D-1 is the current recommended task.
 | Accessibility audit with a real screen reader                  | ⬜                       |
 | Onboarding persistence across restarts                         | ⬜                       |
 | Colour-blind simulation validation of the palette              | ⬜                       |
-| Reconcile encounter queue with DESIGN_SYSTEM §10's one-cinematic-per-session budget | ⬜ queue currently presents every `detected` quest in sequence (compact for routine ones); needs either a session cap or a documented exception for the initial post-onboarding batch |
+| Reconcile encounter queue with DESIGN_SYSTEM §10's one-cinematic-per-session budget | ✅ ADR-0011 |
 | End-to-end interactive desktop click-through (real input, not just service-layer tests) | ⬜ not yet automated in this environment |
+| Full weekly routine/availability capture (school hours, training days, upcoming tests, current projects) feeding generation | ⬜ physical baseline is real and persisted; the weekly-schedule half of the milestone brief's Routine Calibration section is not built |
+| Missions page redesign into the eight-bucket grouping (Today/Active/Protocol/Main/Optional/Upcoming/Completed/Archived) | ⬜ objectives and Daily Protocol are reachable via the existing detail panel; the list-view regrouping itself is not built |
+| User-created quest authoring flow with deterministic, user-approved Architect enhancement | ⬜ not built |
+| Auto-derive a quest's completion fraction from objective progress in the completion dialog | ⬜ the mechanism works end-to-end (`completeQuest`'s `completion` parameter already produces proportional XP, tested); the dialog UI still asks the user to choose full/partial manually rather than computing it |
+| Architect UI surfacing the persisted daily generation plan as a plain-language explanation ("Hoje foram planejadas...") | ⬜ `daily_generation_plans` (ADR-0009) already persists the breakdown; no screen renders it yet |
 
 ## Explicitly deferred
 
